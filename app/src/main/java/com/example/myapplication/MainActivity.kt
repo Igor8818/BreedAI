@@ -15,6 +15,8 @@ import androidx.camera.core.ImageCapture
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -29,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.myapplication.data.MOTIVOS_NAO_AVALIAVEL
@@ -516,7 +519,9 @@ fun BreedAIApp() {
                                             color = Color.White,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.SemiBold,
-                                            maxLines = 1
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 120.dp)
                                         )
                                         Spacer(Modifier.width(4.dp))
                                         Icon(Icons.Default.Edit, "Renomear coleta", tint = Color.White, modifier = Modifier.size(12.dp))
@@ -539,7 +544,10 @@ fun BreedAIApp() {
                                         color = Color(0xFFC8E6C9),
                                         fontSize = 10.sp,
                                         maxLines = 1,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .widthIn(max = 130.dp)
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
                                     )
                                 }
                                 Surface(
@@ -574,25 +582,33 @@ fun BreedAIApp() {
                                 selected = abaSelecionada == 0,
                                 onClick = { abaSelecionada = 0 },
                                 icon = { Icon(Icons.Default.SmartToy, null, modifier = Modifier.size(18.dp)) },
-                                text = { Text("Modelo IA", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                                text = { Text("Modelo IA", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                             )
                             Tab(
                                 selected = abaSelecionada == 1,
                                 onClick = { abaSelecionada = 1 },
                                 icon = { Icon(Icons.Default.Assignment, null, modifier = Modifier.size(18.dp)) },
-                                text = { Text("Formulário", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                                text = { Text("Formulário", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                             )
                             Tab(
                                 selected = abaSelecionada == 2,
                                 onClick = { abaSelecionada = 2 },
                                 icon = { Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(18.dp)) },
-                                text = { Text("Coleta Livre", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                                text = { Text("Coleta Livre", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                             )
                             Tab(
                                 selected = abaSelecionada == 3,
                                 onClick = { abaSelecionada = 3 },
                                 icon = { Icon(Icons.Default.TableView, null, modifier = Modifier.size(18.dp)) },
-                                text = { Text("Edição Dados", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                                text = {
+                                    Text(
+                                        "Dados (${listaRegistros.size})",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             )
                         }
                     }
@@ -626,7 +642,21 @@ fun BreedAIApp() {
                     historicoTratamentos.add(tratamento)
                 }
                 val diagTexto = when (situacao) {
-                    SituacaoPlanta.NORMAL -> totalObjetos.toString()
+                    SituacaoPlanta.NORMAL -> {
+                        val contagemClasses = caixas
+                            .groupingBy { rotuloAmigavel(it.rotulo) }
+                            .eachCount()
+                        val temClasseEspecifica = caixas.any { c ->
+                            val low = c.rotulo.trim().lowercase(Locale.ROOT)
+                            low.isNotEmpty() && low != "cacau" && low != "fruto" && low != "objeto"
+                        }
+                        if ((contagemClasses.size > 1 || temClasseEspecifica) && contagemClasses.isNotEmpty()) {
+                            val resumo = contagemClasses.entries.joinToString(", ") { "${it.key}: ${it.value}" }
+                            "$totalObjetos ($resumo)"
+                        } else {
+                            totalObjetos.toString()
+                        }
+                    }
                     SituacaoPlanta.SEM_FRUTOS -> "Sem Frutos (0)"
                     SituacaoPlanta.NAO_AVALIAVEL -> "Não avaliável ($motivoNaoAval)"
                 }
@@ -703,6 +733,7 @@ fun BreedAIApp() {
                 )
 
                 2 -> TelaColetaLivreFieldBook(
+                    registrosSalvos = listaRegistros,
                     label1 = labelTratamento,
                     label2 = labelParcela,
                     label3 = labelPlanta,
@@ -1086,13 +1117,14 @@ fun TelaFormularioFieldBook(
             }
         }
 
-        // CORPO ROLÁVEL: DETALHES DA PLANILHA -> SITUAÇÃO -> VARIÁVEIS -> FOTO
+        // CORPO ROLÁVEL: DETALHES DA PLANILHA -> SITUAÇÃO -> VARIÁVEIS
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
+                .weight(1f)
                 .verticalScroll(rememberScrollState())
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             if (pontoAtual.colunasPlanilha.isNotEmpty()) {
                 Card(
@@ -1122,79 +1154,91 @@ fun TelaFormularioFieldBook(
                 valoresAtuais = valoresExtrasAtual,
                 onAbrirConfigVariaveis = onAbrirConfigVariaveis
             )
+        }
 
-            Spacer(Modifier.height(4.dp))
-
-            when (situacaoAtual) {
-                SituacaoPlanta.NORMAL -> {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = { launcherGaleria.launch("image/*") },
-                            modifier = Modifier.weight(1f).height(54.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP)
-                        ) {
-                            Icon(Icons.Default.Image, null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("GALERIA", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Button(
-                            onClick = { cameraAtiva = true },
-                            modifier = Modifier.weight(1.4f).height(54.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
-                        ) {
-                            Icon(Icons.Default.PhotoCamera, null)
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (pontoAtual.coletado) "REFAZER FOTO" else "ABRIR CÂMERA", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        // BARRA DE AÇÕES FIXA NO RODAPÉ
+        Surface(
+            shadowElevation = 6.dp,
+            color = Color.White,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                when (situacaoAtual) {
+                    SituacaoPlanta.NORMAL -> {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { launcherGaleria.launch("image/*") },
+                                modifier = Modifier.weight(1f).height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP)
+                            ) {
+                                Icon(Icons.Default.Image, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("GALERIA", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = { cameraAtiva = true },
+                                modifier = Modifier.weight(1.4f).height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
+                            ) {
+                                Icon(Icons.Default.PhotoCamera, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (pontoAtual.coletado) "REFAZER FOTO" else "ABRIR CÂMERA", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
-                }
-                SituacaoPlanta.SEM_FRUTOS -> {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = { launcherGaleria.launch("image/*") },
-                            modifier = Modifier.weight(1f).height(54.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF6C00))
-                        ) {
-                            Icon(Icons.Default.Image, null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("GALERIA (0)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Button(
-                            onClick = { cameraAtiva = true },
-                            modifier = Modifier.weight(1.5f).height(54.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF6C00))
-                        ) {
-                            Icon(Icons.Default.PhotoCamera, null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("FOTO SEM FRUTOS (0)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    SituacaoPlanta.SEM_FRUTOS -> {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { launcherGaleria.launch("image/*") },
+                                modifier = Modifier.weight(1f).height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF6C00))
+                            ) {
+                                Icon(Icons.Default.Image, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("GALERIA (0)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = { cameraAtiva = true },
+                                modifier = Modifier.weight(1.5f).height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF6C00))
+                            ) {
+                                Icon(Icons.Default.PhotoCamera, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("FOTO SEM FRUTOS (0)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
-                }
-                SituacaoPlanta.NAO_AVALIAVEL -> {
-                    Button(
-                        onClick = {
-                            onRegistrarPonto(
-                                Uri.EMPTY,
-                                pontoAtual,
-                                SituacaoPlanta.NAO_AVALIAVEL,
-                                motivoAtual,
-                                0,
-                                valoresExtrasAtual.toMap(),
-                                emptyList()
-                            )
-                            if (indiceAtual < pontos.size - 1) indiceAtual++
-                        },
-                        modifier = Modifier.fillMaxWidth().height(54.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
-                    ) {
-                        Icon(Icons.Default.CheckCircle, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("SALVAR NÃO AVALIÁVEL ($motivoAtual) ▶", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    SituacaoPlanta.NAO_AVALIAVEL -> {
+                        Button(
+                            onClick = {
+                                onRegistrarPonto(
+                                    Uri.EMPTY,
+                                    pontoAtual,
+                                    SituacaoPlanta.NAO_AVALIAVEL,
+                                    motivoAtual,
+                                    0,
+                                    valoresExtrasAtual.toMap(),
+                                    emptyList()
+                                )
+                                if (indiceAtual < pontos.size - 1) indiceAtual++
+                            },
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
+                        ) {
+                            Icon(Icons.Default.CheckCircle, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("SALVAR NÃO AVALIÁVEL ($motivoAtual) ▶", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
                     }
                 }
             }
@@ -1208,6 +1252,7 @@ fun TelaFormularioFieldBook(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TelaColetaLivreFieldBook(
+    registrosSalvos: List<RegistroColeta>,
     label1: String,
     label2: String,
     label3: String,
@@ -1283,6 +1328,10 @@ fun TelaColetaLivreFieldBook(
     val tratVal = tratamento.trim()
     val identificacaoValida = tratVal.isNotBlank() && pVal.isNotBlank() && plVal.isNotBlank()
     val idAtual = "${tratVal}_P${pVal}_Pl${plVal}"
+    val registroExistente = remember(registrosSalvos.size, idAtual, identificacaoValida) {
+        if (!identificacaoValida) null
+        else registrosSalvos.firstOrNull { it.idCompleto.equals(idAtual, ignoreCase = true) }
+    }
 
     val launcherGaleria = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
@@ -1397,37 +1446,69 @@ fun TelaColetaLivreFieldBook(
         )
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
+    Column(modifier = Modifier.fillMaxSize()) {
         // ── 1. IDENTIFICAÇÃO E CONTADOR FIXO (PARCELA / PLANTA / TRATAMENTO) ──
-        Card(
+        Surface(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F8E9)),
-            border = BorderStroke(1.dp, Color(0xFFC5E1A5))
+            color = if (registroExistente != null) Color(0xFFE8F5E9) else Color(0xFFF3F8F2),
+            shadowElevation = 2.dp
         ) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "1. Contador e Identificação",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = VERDE_ESCURO
-                    )
-                    IconButton(onClick = { mostrarDialogLabels = true }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.Settings, "Renomear identificadores", tint = VERDE_APP, modifier = Modifier.size(18.dp))
+                    if (registroExistente != null) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFF2E7D32).copy(alpha = 0.14f),
+                            border = BorderStroke(1.dp, Color(0xFF2E7D32).copy(alpha = 0.4f))
+                        ) {
+                            Text(
+                                "✓ Já coletada (${registroExistente.diagnostico})",
+                                color = VERDE_ESCURO,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .widthIn(max = 220.dp)
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFFF8F00).copy(alpha = 0.14f)
+                        ) {
+                            Text(
+                                if (identificacaoValida) "● Pendente" else "● Preencha $label1",
+                                color = Color(0xFFE65100),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { mostrarDialogLabels = true },
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        modifier = Modifier.height(30.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_ESCURO)
+                    ) {
+                        Icon(Icons.Default.Settings, "Renomear identificadores", modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Rótulos", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
 
-                // Contadores Parcela e Planta lado a lado
+                // Contadores Parcela e Planta lado a lado com botões ergonômicos de 42dp
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1436,27 +1517,31 @@ fun TelaColetaLivreFieldBook(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp),
                         color = Color.White,
-                        border = BorderStroke(1.dp, Color(0xFFE0E0E0))
+                        border = BorderStroke(1.dp, Color(0xFFC5E1A5))
                     ) {
                         Column(
-                            modifier = Modifier.padding(8.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text(label2.uppercase(), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                            Text(label2.uppercase(), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
                             if (isNum2) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceEvenly,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
                                     IconButton(
                                         onClick = { if (parcelaNum > 1) onParcelaNumChange(parcelaNum - 1) },
-                                        modifier = Modifier.size(32.dp)
+                                        modifier = Modifier.size(42.dp)
                                     ) {
-                                        Icon(Icons.Default.RemoveCircle, null, tint = Color(0xFFC62828), modifier = Modifier.size(26.dp))
+                                        Icon(Icons.Default.RemoveCircle, "Diminuir $label2", tint = Color(0xFFC62828), modifier = Modifier.size(30.dp))
                                     }
-                                    Text("$parcelaNum", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(horizontal = 8.dp))
+                                    Text("$parcelaNum", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(horizontal = 4.dp))
                                     IconButton(
                                         onClick = { onParcelaNumChange(parcelaNum + 1) },
-                                        modifier = Modifier.size(32.dp)
+                                        modifier = Modifier.size(42.dp)
                                     ) {
-                                        Icon(Icons.Default.AddCircle, null, tint = VERDE_APP, modifier = Modifier.size(26.dp))
+                                        Icon(Icons.Default.AddCircle, "Aumentar $label2", tint = VERDE_APP, modifier = Modifier.size(30.dp))
                                     }
                                 }
                             } else {
@@ -1474,27 +1559,31 @@ fun TelaColetaLivreFieldBook(
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp),
                         color = Color.White,
-                        border = BorderStroke(1.dp, Color(0xFFE0E0E0))
+                        border = BorderStroke(1.dp, Color(0xFFC5E1A5))
                     ) {
                         Column(
-                            modifier = Modifier.padding(8.dp),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text(label3.uppercase(), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                            Text(label3.uppercase(), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
                             if (isNum3) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceEvenly,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
                                     IconButton(
                                         onClick = { if (plantaNum > 1) onPlantaNumChange(plantaNum - 1) },
-                                        modifier = Modifier.size(32.dp)
+                                        modifier = Modifier.size(42.dp)
                                     ) {
-                                        Icon(Icons.Default.RemoveCircle, null, tint = Color(0xFFC62828), modifier = Modifier.size(26.dp))
+                                        Icon(Icons.Default.RemoveCircle, "Diminuir $label3", tint = Color(0xFFC62828), modifier = Modifier.size(30.dp))
                                     }
-                                    Text("$plantaNum", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = VERDE_ESCURO, modifier = Modifier.padding(horizontal = 8.dp))
+                                    Text("$plantaNum", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = VERDE_ESCURO, modifier = Modifier.padding(horizontal = 4.dp))
                                     IconButton(
                                         onClick = { onPlantaNumChange(plantaNum + 1) },
-                                        modifier = Modifier.size(32.dp)
+                                        modifier = Modifier.size(42.dp)
                                     ) {
-                                        Icon(Icons.Default.AddCircle, null, tint = VERDE_APP, modifier = Modifier.size(26.dp))
+                                        Icon(Icons.Default.AddCircle, "Aumentar $label3", tint = VERDE_APP, modifier = Modifier.size(30.dp))
                                     }
                                 }
                             } else {
@@ -1509,7 +1598,7 @@ fun TelaColetaLivreFieldBook(
                     }
                 }
 
-                // Campo de Tratamento (com autocomplete local dos já digitados, sem CEPEC)
+                // Campo de Tratamento (com autocomplete e chips de toque rápido)
                 val sugestoes = remember(tratamento, historicoTratamentos.toList()) {
                     val b = tratamento.trim()
                     if (b.isBlank()) historicoTratamentos.take(20)
@@ -1536,8 +1625,15 @@ fun TelaColetaLivreFieldBook(
                             .menuAnchor(MenuAnchorType.PrimaryEditable, true),
                         leadingIcon = { Icon(Icons.Default.LocalOffer, null, tint = VERDE_APP) },
                         trailingIcon = {
-                            if (sugestoes.isNotEmpty()) {
-                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuTratamentosExpandido)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (tratamento.isNotEmpty()) {
+                                    IconButton(onClick = { onTratamentoChange("") }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Clear, "Limpar $label1", modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                                if (sugestoes.isNotEmpty()) {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuTratamentosExpandido)
+                                }
                             }
                         }
                     )
@@ -1558,121 +1654,163 @@ fun TelaColetaLivreFieldBook(
                         }
                     }
                 }
+
+                if (historicoTratamentos.isNotEmpty()) {
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(historicoTratamentos.take(15)) { item ->
+                            val ativo = tratamento.equals(item, ignoreCase = true)
+                            FilterChip(
+                                selected = ativo,
+                                onClick = {
+                                    onTratamentoChange(item)
+                                    menuTratamentosExpandido = false
+                                },
+                                label = { Text(item, fontSize = 11.sp, maxLines = 1) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFFC8E6C9),
+                                    selectedLabelColor = VERDE_ESCURO
+                                )
+                            )
+                        }
+                    }
+                }
             }
         }
 
+        // CORPO ROLÁVEL: SITUAÇÃO E VARIÁVEIS EXTRAS
         Column(
             modifier = Modifier
+                .fillMaxWidth()
                 .weight(1f)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // ── 2. SITUAÇÃO DA PLANTA ──
-        SeletorSituacaoPlantaCard(
-            situacao = situacaoAtual,
-            onSituacaoChange = { situacaoAtual = it },
-            motivoNaoAvaliavel = motivoAtual,
-            onMotivoChange = { motivoAtual = it }
-        )
+            SeletorSituacaoPlantaCard(
+                situacao = situacaoAtual,
+                onSituacaoChange = { situacaoAtual = it },
+                motivoNaoAvaliavel = motivoAtual,
+                onMotivoChange = { motivoAtual = it }
+            )
 
-        // ── 3. VARIÁVEIS EXTRAS (FIELD BOOK) ──
-        BlocoVariaveisExtrasCard(
-            variaveisAtivas = variaveisAtivas,
-            valoresAtuais = valoresExtras,
-            onAbrirConfigVariaveis = onAbrirConfigVariaveis
-        )
-
-        // ── 4. FOTO / SALVAR ──
-        if (!identificacaoValida) {
-            Text(
-                "Preencha \"$label1\", \"$label2\" e \"$label3\" para liberar o registro.",
-                fontSize = 12.sp,
-                color = Color(0xFFC62828),
-                fontWeight = FontWeight.Medium
+            BlocoVariaveisExtrasCard(
+                variaveisAtivas = variaveisAtivas,
+                valoresAtuais = valoresExtras,
+                onAbrirConfigVariaveis = onAbrirConfigVariaveis
             )
         }
 
-        when (situacaoAtual) {
-            SituacaoPlanta.NORMAL -> {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { launcherGaleria.launch("image/*") },
-                        enabled = identificacaoValida,
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP)
-                    ) {
-                        Icon(Icons.Default.Image, null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("GALERIA", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        // BARRA DE AÇÕES FIXA NO RODAPÉ
+        Surface(
+            shadowElevation = 6.dp,
+            color = Color.White,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (!identificacaoValida) {
+                    Text(
+                        "Preencha \"$label1\", \"$label2\" e \"$label3\" para liberar o registro.",
+                        fontSize = 11.sp,
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                when (situacaoAtual) {
+                    SituacaoPlanta.NORMAL -> {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { launcherGaleria.launch("image/*") },
+                                enabled = identificacaoValida,
+                                modifier = Modifier.weight(1f).height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP)
+                            ) {
+                                Icon(Icons.Default.Image, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("GALERIA", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = { cameraAtiva = true },
+                                enabled = identificacaoValida,
+                                modifier = Modifier.weight(1.4f).height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
+                            ) {
+                                Icon(Icons.Default.PhotoCamera, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    if (registroExistente != null) "REFAZER FOTO" else "ABRIR CÂMERA",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
-                    Button(
-                        onClick = { cameraAtiva = true },
-                        enabled = identificacaoValida,
-                        modifier = Modifier.weight(1.4f).height(56.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
-                    ) {
-                        Icon(Icons.Default.PhotoCamera, null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("ABRIR CÂMERA", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    SituacaoPlanta.SEM_FRUTOS -> {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { launcherGaleria.launch("image/*") },
+                                enabled = identificacaoValida,
+                                modifier = Modifier.weight(1f).height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF6C00))
+                            ) {
+                                Icon(Icons.Default.Image, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("GALERIA (0)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = { cameraAtiva = true },
+                                enabled = identificacaoValida,
+                                modifier = Modifier.weight(1.5f).height(52.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF6C00))
+                            ) {
+                                Icon(Icons.Default.PhotoCamera, null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("FOTO SEM FRUTOS (0)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                    SituacaoPlanta.NAO_AVALIAVEL -> {
+                        Button(
+                            onClick = {
+                                onSalvarColeta(
+                                    Uri.EMPTY,
+                                    tratVal,
+                                    pVal,
+                                    plVal,
+                                    SituacaoPlanta.NAO_AVALIAVEL,
+                                    motivoAtual,
+                                    0,
+                                    valoresExtras.toMap(),
+                                    emptyList()
+                                )
+                                situacaoAtual = SituacaoPlanta.NORMAL
+                                valoresExtras.clear()
+                            },
+                            enabled = identificacaoValida,
+                            modifier = Modifier.fillMaxWidth().height(52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
+                        ) {
+                            Icon(Icons.Default.CheckCircle, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("REGISTRAR NÃO AVALIÁVEL ($motivoAtual) ▶", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        }
                     }
                 }
             }
-            SituacaoPlanta.SEM_FRUTOS -> {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = { launcherGaleria.launch("image/*") },
-                        enabled = identificacaoValida,
-                        modifier = Modifier.weight(1f).height(56.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF6C00))
-                    ) {
-                        Icon(Icons.Default.Image, null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("GALERIA (0)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Button(
-                        onClick = { cameraAtiva = true },
-                        enabled = identificacaoValida,
-                        modifier = Modifier.weight(1.5f).height(56.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF6C00))
-                    ) {
-                        Icon(Icons.Default.PhotoCamera, null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("FOTO SEM FRUTOS (0)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-            }
-            SituacaoPlanta.NAO_AVALIAVEL -> {
-                Button(
-                    onClick = {
-                        onSalvarColeta(
-                            Uri.EMPTY,
-                            tratVal,
-                            pVal,
-                            plVal,
-                            SituacaoPlanta.NAO_AVALIAVEL,
-                            motivoAtual,
-                            0,
-                            valoresExtras.toMap(),
-                            emptyList()
-                        )
-                        situacaoAtual = SituacaoPlanta.NORMAL
-                        valoresExtras.clear()
-                    },
-                    enabled = identificacaoValida,
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828))
-                ) {
-                    Icon(Icons.Default.CheckCircle, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("REGISTRAR NÃO AVALIÁVEL ($motivoAtual) E AVANÇAR", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-            }
-        }
         }
     }
 }

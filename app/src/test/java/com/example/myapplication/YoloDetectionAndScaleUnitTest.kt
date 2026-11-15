@@ -134,6 +134,34 @@ class YoloDetectionAndScaleUnitTest {
         assertTrue("Grafo TFLite deve conter tensor de entrada 'inputs_0'", tailAscii.contains("inputs_0"))
     }
 
+    @Test
+    fun testDetectorDoencaTfliteAsset_BinaryIntegrityAndTensorContract() {
+        val candidates = listOf(
+            java.io.File("src/main/assets/detector_doenca.tflite"),
+            java.io.File("app/src/main/assets/detector_doenca.tflite")
+        )
+        val modelFile = candidates.firstOrNull { it.exists() }
+        assertNotNull("O modelo detector_doenca.tflite deve existir na pasta assets do projeto", modelFile)
+        assertTrue("O modelo detector_doenca.tflite deve ter mais de 10 MB (YOLO11n Float32)", modelFile!!.length() > 10_000_000L)
+
+        val header = ByteArray(16)
+        modelFile.inputStream().use { it.read(header) }
+        val magic = String(header, 4, 4, Charsets.US_ASCII)
+        assertEquals("Cabeçalho FlatBuffer TFLite válido (TFL3)", "TFL3", magic)
+
+        val tailSize = 250_000.coerceAtMost(modelFile.length().toInt())
+        val tailBytes = ByteArray(tailSize)
+        java.io.RandomAccessFile(modelFile, "r").use { raf ->
+            raf.seek(modelFile.length() - tailSize)
+            raf.readFully(tailBytes)
+        }
+        val tailAscii = String(tailBytes, Charsets.US_ASCII)
+        assertTrue(
+            "Grafo TFLite do modelo de doenças deve conter tensores 'images' ou 'Identity'",
+            tailAscii.contains("images") || tailAscii.contains("Identity")
+        )
+    }
+
     private fun nms(boxes: List<FloatArray>, iouThresh: Float = 0.45f): List<FloatArray> {
         val sorted = boxes.sortedByDescending { it[4] }.toMutableList()
         val result = mutableListOf<FloatArray>()

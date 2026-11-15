@@ -51,7 +51,7 @@ fun criarDetectorHelperBreedAI(
             )
         modelConfig.modeloSelecionado != null ->
             ObjectDetectorHelper.ModelSource.Asset(modelConfig.modeloSelecionado.nomeArquivo)
-        else -> ObjectDetectorHelper.ModelSource.Asset("detector.tflite")
+        else -> ObjectDetectorHelper.ModelSource.Asset("detector_doenca.tflite")
     }
     return ObjectDetectorHelper(
         context = context,
@@ -59,7 +59,8 @@ fun criarDetectorHelperBreedAI(
         modelSource = source,
         scoreThreshold = modelConfig.threshold,
         maxResults = modelConfig.maxResultados,
-        defaultLabel = modelConfig.labelsFiltro.firstOrNull() ?: "objeto"
+        defaultLabel = modelConfig.labelsFiltro.firstOrNull() ?: "objeto",
+        customLabels = modelConfig.labelsFiltro
     )
 }
 
@@ -198,79 +199,81 @@ fun SeletorSituacaoPlantaCard(
     motivoNaoAvaliavel: String,
     onMotivoChange: (String) -> Unit
 ) {
-    Card(
+    Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFFAFAFA)),
+        color = Color(0xFFFAFAFA),
         border = BorderStroke(1.dp, Color(0xFFE0E0E0))
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(
-                "Situação da Planta",
-                fontWeight = FontWeight.Bold,
-                fontSize = 14.sp,
-                color = Color(0xFF1B5E20)
-            )
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                SituacaoPlanta.entries.forEach { opcao ->
-                    val selecionada = situacao == opcao
-                    val corAtiva = when (opcao) {
-                        SituacaoPlanta.NORMAL -> VERDE_PRINCIPAL
-                        SituacaoPlanta.SEM_FRUTOS -> Color(0xFFEF6C00)
-                        SituacaoPlanta.NAO_AVALIAVEL -> Color(0xFFC62828)
-                    }
-                    Surface(
-                        onClick = { onSituacaoChange(opcao) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (selecionada) corAtiva else Color.White,
-                        border = BorderStroke(1.5.dp, if (selecionada) corAtiva else Color(0xFFBDBDBD))
-                    ) {
-                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 4.dp)) {
-                            Text(
-                                opcao.rotulo,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (selecionada) Color.White else Color.DarkGray,
-                                maxLines = 1
-                            )
+                Text(
+                    "Situação da Planta",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = Color(0xFF1B5E20)
+                )
+            }
+
+            // Segmented control em uma única linha compacta
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFFEEEEEE),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    SituacaoPlanta.entries.forEach { opcao ->
+                        val selecionada = situacao == opcao
+                        val corAtiva = when (opcao) {
+                            SituacaoPlanta.NORMAL -> VERDE_PRINCIPAL
+                            SituacaoPlanta.SEM_FRUTOS -> Color(0xFFEF6C00)
+                            SituacaoPlanta.NAO_AVALIAVEL -> Color(0xFFC62828)
+                        }
+                        Surface(
+                            onClick = { onSituacaoChange(opcao) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(36.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (selecionada) corAtiva else Color.Transparent
+                        ) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 4.dp)) {
+                                Text(
+                                    opcao.rotulo,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selecionada) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (selecionada) Color.White else Color.DarkGray,
+                                    maxLines = 1
+                                )
+                            }
                         }
                     }
                 }
             }
 
             when (situacao) {
-                SituacaoPlanta.NORMAL -> {
-                    Text(
-                        "Planta normal com frutos: tire a foto para detecção e contagem.",
-                        fontSize = 11.sp,
-                        color = Color.Gray
-                    )
-                }
+                SituacaoPlanta.NORMAL -> Unit
                 SituacaoPlanta.SEM_FRUTOS -> {
                     Text(
-                        "Planta normal, mas sem frutos: faça a foto como comprovação (salva contagem 0).",
+                        "Foto comprobatória obrigatória • salva contagem 0.",
                         fontSize = 11.sp,
                         color = Color(0xFFE65100),
                         fontWeight = FontWeight.Medium
                     )
                 }
                 SituacaoPlanta.NAO_AVALIAVEL -> {
-                    Text(
-                        "Motivo (não exige foto e salva contagem 0):",
-                        fontSize = 11.sp,
-                        color = Color(0xFFC62828),
-                        fontWeight = FontWeight.Medium
-                    )
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -279,7 +282,7 @@ fun SeletorSituacaoPlantaCard(
                             FilterChip(
                                 selected = motivoNaoAvaliavel == motivo,
                                 onClick = { onMotivoChange(motivo) },
-                                label = { Text(motivo, fontSize = 12.sp) },
+                                label = { Text(motivo, fontSize = 11.sp) },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = Color(0xFFFFCDD2),
                                     selectedLabelColor = Color(0xFFB71C1C)
@@ -295,6 +298,7 @@ fun SeletorSituacaoPlantaCard(
 
 /**
  * Seção de Variáveis Extras inspirada no Field Book (Cor do Fruto, Nota de Vírus, Diâmetro, etc.).
+ * Recolhida em botão compacto de 1 linha quando não há variáveis ativas.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -303,6 +307,24 @@ fun BlocoVariaveisExtrasCard(
     valoresAtuais: MutableMap<String, String>,
     onAbrirConfigVariaveis: () -> Unit
 ) {
+    if (variaveisAtivas.isEmpty()) {
+        OutlinedButton(
+            onClick = onAbrirConfigVariaveis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(42.dp),
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, Color(0xFFA5D6A7)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF2E7D32)),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            Icon(Icons.Default.AddCircleOutline, null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("+ Configurar Variáveis Extras (Opcional)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+        return
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -310,7 +332,7 @@ fun BlocoVariaveisExtrasCard(
         border = BorderStroke(1.dp, Color(0xFFC8E6C9))
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
@@ -319,33 +341,35 @@ fun BlocoVariaveisExtrasCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.ListAlt, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.ListAlt, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "Variáveis Extras (Field Book)",
+                        "Variáveis (${variaveisAtivas.size})",
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
+                        fontSize = 13.sp,
                         color = Color(0xFF1B5E20)
                     )
                 }
-                TextButton(
-                    onClick = onAbrirConfigVariaveis,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                ) {
-                    Icon(Icons.Default.AddCircleOutline, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Configurar", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (valoresAtuais.isNotEmpty()) {
+                        TextButton(
+                            onClick = { valoresAtuais.clear() },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("Limpar", fontSize = 11.sp, color = Color(0xFFC62828), fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    TextButton(
+                        onClick = onAbrirConfigVariaveis,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Icon(Icons.Default.AddCircleOutline, null, modifier = Modifier.size(15.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Configurar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
-
-            if (variaveisAtivas.isEmpty()) {
-                Text(
-                    "Nenhuma variável extra ativa. Toque em Configurar para ativar (ex: Cor do Fruto, Nota de Vírus) ou criar novas.",
-                    fontSize = 11.sp,
-                    color = Color.Gray
-                )
-            } else {
-                variaveisAtivas.forEach { variavel ->
+            variaveisAtivas.forEach { variavel ->
                     val valorAtual = valoresAtuais[variavel.nome] ?: ""
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(variavel.nome, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = Color(0xFF2E7D32))
@@ -393,7 +417,6 @@ fun BlocoVariaveisExtrasCard(
             }
         }
     }
-}
 
 @Composable
 fun DialogGerenciarVariaveisExtras(

@@ -38,7 +38,7 @@ import org.tensorflow.lite.task.vision.detector.Detection
 import java.util.Locale
 
 private val PALETA_CLASSES = listOf(
-    Color(0xFF00E676),
+    Color(0xFF00897B),
     Color(0xFFFFB300),
     Color(0xFF00B0FF),
     Color(0xFFFF5252),
@@ -46,22 +46,55 @@ private val PALETA_CLASSES = listOf(
     Color(0xFF64FFDA)
 )
 
+internal fun rotuloAmigavel(label: String): String {
+    val limpo = label.trim()
+    return when (limpo.lowercase(Locale.ROOT)) {
+        "podridaoparda", "podridão parda", "podridao", "podridão" -> "Podridão"
+        "moniliase", "monilíase" -> "Monilíase"
+        "vassourabruxa", "vassoura de bruxa", "vassoura" -> "Vassoura"
+        "sadio" -> "Sadio"
+        "" -> "Objeto"
+        else -> limpo
+    }
+}
+
+private fun isRotuloGenerico(rotulo: String): Boolean {
+    val low = rotulo.trim().lowercase(Locale.ROOT)
+    return low.isBlank() || low == "cacau" || low == "fruto" || low == "objeto"
+}
+
+internal fun corParaLabel(
+    label: String,
+    manual: Boolean = false
+): Color {
+    val low = label.trim().lowercase(Locale.ROOT)
+    return when {
+        low == "sadio" -> Color(0xFF2E7D32)
+        low.contains("vassoura") -> Color(0xFFE65100)
+        low.contains("podrid") -> Color(0xFFC62828)
+        low.contains("monili") -> Color(0xFF8E24AA)
+        manual && isRotuloGenerico(low) -> Color(0xFF1565C0)
+        isRotuloGenerico(low) -> Color(0xFF00E676)
+        else -> {
+            val hash = kotlin.math.abs(low.hashCode())
+            PALETA_CLASSES[hash % PALETA_CLASSES.size]
+        }
+    }
+}
+
 internal fun corParaCaixa(
     rotulo: String,
     manual: Boolean,
     labelsDisponiveis: List<String>
 ): Color {
+    val low = rotulo.trim().lowercase(Locale.ROOT)
+    if (low == "sadio" || low.contains("vassoura") || low.contains("podrid") || low.contains("monili")) {
+        return corParaLabel(rotulo, manual)
+    }
     if (labelsDisponiveis.size <= 1) {
-        return if (manual) Color(0xFF00E5FF) else Color(0xFF00E676)
+        return if (manual) Color(0xFF1565C0) else Color(0xFF00E676)
     }
-    val idx = labelsDisponiveis.indexOfFirst { it.equals(rotulo, ignoreCase = true) }
-    return if (idx >= 0) {
-        PALETA_CLASSES[idx % PALETA_CLASSES.size]
-    } else if (manual) {
-        Color(0xFF00E5FF)
-    } else {
-        Color(0xFF00E676)
-    }
+    return corParaLabel(rotulo, manual)
 }
 
 /**
@@ -183,6 +216,11 @@ internal fun fundirDeteccoesComSnapping(
         }
         if (foiExcluida) continue
 
+        val cobreManual = resultado.any { c ->
+            c.manual && iouNorm(c, det.normLeft, det.normTop, det.normRight, det.normBottom) > 0.35f
+        }
+        if (cobreManual) continue
+
         var melhorIdx = -1
         var melhorIou = 0.20f
 
@@ -201,11 +239,21 @@ internal fun fundirDeteccoesComSnapping(
         if (melhorIdx >= 0) {
             indicesPareados.add(melhorIdx)
             val existente = resultado[melhorIdx]
+            val estaticoEspecifico = !isRotuloGenerico(det.rotulo)
+            val existenteGenerico = isRotuloGenerico(existente.rotulo)
+            val rotuloAtualizado = if (!existente.manual && estaticoEspecifico &&
+                (existenteGenerico || !existente.rotulo.equals(det.rotulo, ignoreCase = true))
+            ) {
+                det.rotulo
+            } else {
+                existente.rotulo
+            }
             resultado[melhorIdx] = existente.copy(
                 normLeft = det.normLeft,
                 normTop = det.normTop,
                 normRight = det.normRight,
                 normBottom = det.normBottom,
+                rotulo = rotuloAtualizado,
                 confianca = maxOf(existente.confianca, det.confianca)
             )
         } else {
@@ -241,9 +289,16 @@ fun TelaRevisaoCaptura(
     onRefazer: () -> Unit
 ) {
     val context = LocalContext.current
-    val rotuloPadrao = remember(labelsFiltro) {
-        labelsFiltro.firstOrNull()?.takeIf { it.isNotBlank() } ?: "Objeto"
+    val classesDisponiveis = remember(labelsFiltro) {
+        val especificas = labelsFiltro.filter { !isRotuloGenerico(it) }
+        if (especificas.size > 1) especificas else labelsFiltro
     }
+    val rotuloPadrao = remember(classesDisponiveis) {
+        classesDisponiveis.firstOrNull { it.equals("Sadio", ignoreCase = true) }
+            ?: classesDisponiveis.firstOrNull()?.takeIf { it.isNotBlank() }
+            ?: "Objeto"
+    }
+    var classeParaAdicionar by remember(rotuloPadrao) { mutableStateOf(rotuloPadrao) }
 
     val caixas = remember(fotoUri, modoSemFrutos) {
         mutableStateListOf<CaixaAuditavel>().apply {
@@ -415,7 +470,7 @@ fun TelaRevisaoCaptura(
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(fotoUri, caixas.size, modoSemFrutos) {
+                    .pointerInput(fotoUri, caixas.size, modoSemFrutos, classesDisponiveis) {
                         detectTapGestures { tapOffset ->
                             if (modoSemFrutos) return@detectTapGestures
                             val normTapX = (tapOffset.x - offsetX) / displayedW
@@ -434,6 +489,16 @@ fun TelaRevisaoCaptura(
                                 )
 
                                 if (idxTocado >= 0) {
+                                    if (classesDisponiveis.size > 1) {
+                                        val atual = caixas[idxTocado]
+                                        val novoRotulo = if (atual.rotulo.equals(classeParaAdicionar, ignoreCase = true)) {
+                                            val curIdx = classesDisponiveis.indexOfFirst { it.equals(atual.rotulo, ignoreCase = true) }
+                                            classesDisponiveis[((curIdx + 1).coerceAtLeast(0)) % classesDisponiveis.size]
+                                        } else {
+                                            classeParaAdicionar
+                                        }
+                                        caixas[idxTocado] = atual.copy(rotulo = novoRotulo)
+                                    }
                                     indiceSelecionado = idxTocado
                                 } else if (indiceSelecionado >= 0) {
                                     indiceSelecionado = -1
@@ -445,7 +510,7 @@ fun TelaRevisaoCaptura(
                                         normTop = (normTapY - halfH).coerceIn(0f, 1f - halfH * 2),
                                         normRight = (normTapX + halfW).coerceIn(halfW * 2, 1f),
                                         normBottom = (normTapY + halfH).coerceIn(halfH * 2, 1f),
-                                        rotulo = rotuloPadrao,
+                                        rotulo = classeParaAdicionar,
                                         manual = true,
                                         confianca = 1.0f
                                     )
@@ -480,8 +545,8 @@ fun TelaRevisaoCaptura(
                         )
                     }
 
-                    val labelTxt = if (labelsFiltro.size > 1) {
-                        "#${idx + 1} ${caixa.rotulo}"
+                    val labelTxt = if (classesDisponiveis.size > 1 || !isRotuloGenerico(caixa.rotulo)) {
+                        "#${idx + 1} ${rotuloAmigavel(caixa.rotulo)}"
                     } else if (caixa.manual) {
                         "#${idx + 1} (Manual)"
                     } else {
@@ -638,7 +703,7 @@ fun TelaRevisaoCaptura(
                         }
 
                         // Se o modelo carregado tiver múltiplas classes configuradas, exibe troca de rótulo dinâmica
-                        if (labelsFiltro.size > 1) {
+                        if (classesDisponiveis.size > 1) {
                             Spacer(Modifier.height(6.dp))
                             Row(
                                 modifier = Modifier
@@ -646,12 +711,13 @@ fun TelaRevisaoCaptura(
                                     .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                labelsFiltro.forEach { classeLabel ->
+                                classesDisponiveis.forEach { classeLabel ->
                                     val ativo = caixaAtual.rotulo.equals(classeLabel, ignoreCase = true)
-                                    val corClasse = corParaCaixa(classeLabel, false, labelsFiltro)
+                                    val corClasse = corParaLabel(classeLabel, manual = false)
                                     Button(
                                         onClick = {
                                             caixas[indiceSelecionado] = caixaAtual.copy(rotulo = classeLabel)
+                                            classeParaAdicionar = classeLabel
                                             indiceSelecionado = -1
                                         },
                                         colors = ButtonDefaults.buttonColors(
@@ -662,9 +728,9 @@ fun TelaRevisaoCaptura(
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
                                         Text(
-                                            classeLabel,
+                                            rotuloAmigavel(classeLabel),
                                             fontSize = 11.sp,
-                                            color = if (ativo) Color.Black else Color.White,
+                                            color = Color.White,
                                             fontWeight = FontWeight.Bold
                                         )
                                     }
@@ -694,14 +760,28 @@ fun TelaRevisaoCaptura(
                             fontWeight = FontWeight.Medium
                         )
                     } else {
+                        val contagemPorClasse = caixas
+                            .groupingBy { rotuloAmigavel(it.rotulo) }
+                            .eachCount()
+                        val exibirPorClasse = classesDisponiveis.size > 1 ||
+                            caixas.any { !isRotuloGenerico(it.rotulo) }
+
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             ChipResumo("Total", totalObjetos, Color(0xFF00E676))
-                            ChipResumo("IA", totalIA, Color(0xFF69F0AE))
-                            ChipResumo("Manuais", totalManuais, Color(0xFF00E5FF))
+                            if (exibirPorClasse && contagemPorClasse.isNotEmpty()) {
+                                contagemPorClasse.forEach { (rotuloFriendly, qtd) ->
+                                    ChipResumo(rotuloFriendly, qtd, corParaLabel(rotuloFriendly, manual = false))
+                                }
+                            } else {
+                                ChipResumo("IA", totalIA, Color(0xFF69F0AE))
+                                ChipResumo("Manuais", totalManuais, Color(0xFF1565C0))
+                            }
                         }
                     }
 

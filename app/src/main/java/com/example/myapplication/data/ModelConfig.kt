@@ -11,12 +11,14 @@ data class ModelEmbutido(
     val labelsDefault: List<String>
 )
 
+val LABELS_DOENCA_CACAU = listOf("PodridaoParda", "Moniliase", "Sadio", "VassouraBruxa")
+
 data class ModelConfig(
     val modeloSelecionado: ModelEmbutido? = null,
     val modeloInternoPath: String? = null,
     val modeloExternoUri: Uri? = null,
     val modeloExternoNome: String = "",
-    val labelsFiltro: List<String> = listOf("cacau", "fruto"),
+    val labelsFiltro: List<String> = LABELS_DOENCA_CACAU + listOf("cacau", "fruto"),
     val threshold: Float = 0.30f,
     val maxResultados: Int = 25
 ) {
@@ -75,9 +77,15 @@ data class ModelConfig(
 
 val MODELOS_EMBUTIDOS = listOf(
     ModelEmbutido(
+        nomeArquivo = "detector_doenca.tflite",
+        nomeExibicao = "Cacau Doenças (Pré-carregado)",
+        descricao = "Modelo multi-classe para diagnóstico fitossanitário de cacau (Sadio, Podridão Parda, Monilíase e Vassoura de Bruxa)",
+        labelsDefault = LABELS_DOENCA_CACAU
+    ),
+    ModelEmbutido(
         nomeArquivo = "detector.tflite",
-        nomeExibicao = "Cacau (Pré-carregado)",
-        descricao = "Modelo pré-carregado desenvolvido pela equipe para detecção de frutos de cacau",
+        nomeExibicao = "Cacau Contagem (Pré-carregado)",
+        descricao = "Modelo pré-carregado desenvolvido pela equipe para detecção e contagem geral de frutos de cacau",
         labelsDefault = listOf("cacau", "fruto")
     )
 )

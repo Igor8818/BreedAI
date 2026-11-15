@@ -12,6 +12,7 @@ import com.example.myapplication.data.variaveisExtrasIniciais
 import com.example.myapplication.userinterface.CaixaAuditavel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -20,12 +21,43 @@ import org.mockito.Mockito
 class ModelAndStateUnitTest {
 
     @Test
-    fun `modelos embutidos devem manter apenas modelo pre-carregado de cacau`() {
-        assertEquals(1, MODELOS_EMBUTIDOS.size)
-        val defaultModel = MODELOS_EMBUTIDOS.first()
-        assertEquals("detector.tflite", defaultModel.nomeArquivo)
-        assertEquals("Cacau (Pré-carregado)", defaultModel.nomeExibicao)
-        assertTrue(defaultModel.labelsDefault.contains("cacau"))
+    fun `modelos embutidos devem trazer modelo de doencas e modelo de contagem`() {
+        assertEquals(2, MODELOS_EMBUTIDOS.size)
+        val doencaModel = MODELOS_EMBUTIDOS.first()
+        assertEquals("detector_doenca.tflite", doencaModel.nomeArquivo)
+        assertEquals("Cacau Doenças (Pré-carregado)", doencaModel.nomeExibicao)
+        assertEquals(listOf("PodridaoParda", "Moniliase", "Sadio", "VassouraBruxa"), doencaModel.labelsDefault)
+
+        val contagemModel = MODELOS_EMBUTIDOS[1]
+        assertEquals("detector.tflite", contagemModel.nomeArquivo)
+        assertTrue(contagemModel.labelsDefault.contains("cacau"))
+
+        val defaultCfg = ModelConfig()
+        assertTrue(defaultCfg.labelsFiltro.containsAll(doencaModel.labelsDefault))
+    }
+
+    @Test
+    fun `cores semanticas e resolucao multi-classe devem mapear doencas de cacau`() {
+        val corSadio = com.example.myapplication.userinterface.corParaLabel("Sadio")
+        val corVassoura = com.example.myapplication.userinterface.corParaLabel("VassouraBruxa")
+        val corPodridao = com.example.myapplication.userinterface.corParaLabel("PodridaoParda")
+        val corMoniliase = com.example.myapplication.userinterface.corParaLabel("Moniliase")
+
+        assertNotEquals(corSadio, corVassoura)
+        assertNotEquals(corVassoura, corPodridao)
+        assertNotEquals(corPodridao, corMoniliase)
+        assertEquals("Podridão", com.example.myapplication.userinterface.rotuloAmigavel("PodridaoParda"))
+        assertEquals("Monilíase", com.example.myapplication.userinterface.rotuloAmigavel("Moniliase"))
+        assertEquals("Vassoura", com.example.myapplication.userinterface.rotuloAmigavel("VassouraBruxa"))
+
+        val resolved = com.example.myapplication.userinterface.util.ObjectDetectorHelper.resolverRotuloPorIndice(
+            classIdx = 2,
+            numClasses = 4,
+            modelLabels = emptyList(),
+            customLabels = listOf("PodridaoParda", "Moniliase", "Sadio", "VassouraBruxa", "cacau", "fruto"),
+            fallbackDefault = "objeto"
+        )
+        assertEquals("Sadio", resolved)
     }
 
     @Test

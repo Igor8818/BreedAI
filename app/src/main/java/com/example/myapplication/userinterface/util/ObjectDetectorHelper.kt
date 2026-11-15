@@ -35,10 +35,11 @@ import kotlin.math.min
 class ObjectDetectorHelper(
     val context: Context,
     var detectorListener: DetectorListener?,
-    var modelSource: ModelSource = ModelSource.Asset("detector.tflite"),
+    var modelSource: ModelSource = ModelSource.Asset("detector_doenca.tflite"),
     var scoreThreshold: Float = 0.30f,
     var maxResults: Int = 25,
-    var defaultLabel: String = "objeto"
+    var defaultLabel: String = "objeto",
+    var customLabels: List<String> = emptyList()
 ) {
     sealed class ModelSource {
         data class Asset(val fileName: String) : ModelSource()
@@ -353,12 +354,7 @@ class ObjectDetectorHelper(
 
                     if (right <= left || bottom <= top) continue
 
-                    val fallback = defaultLabel.ifBlank { "objeto" }
-                    val label = if (modelLabels.isNotEmpty()) {
-                        modelLabels.getOrNull(classIdx) ?: fallback
-                    } else {
-                        fallback
-                    }
+                    val label = resolverRotuloClasse(classIdx)
 
                     finalDetections.add(
                         Detection.create(
@@ -470,12 +466,7 @@ class ObjectDetectorHelper(
                     if (right <= left || bottom <= top) continue
 
                     val classIdx = box[5].toInt()
-                    val fallback = defaultLabel.ifBlank { "objeto" }
-                    val label = if (modelLabels.isNotEmpty()) {
-                        modelLabels.getOrNull(classIdx) ?: fallback
-                    } else {
-                        fallback
-                    }
+                    val label = resolverRotuloClasse(classIdx)
 
                     finalDetections.add(
                         Detection.create(
@@ -567,6 +558,14 @@ class ObjectDetectorHelper(
         inputByteBuffer = null
     }
 
+    private fun resolverRotuloClasse(classIdx: Int): String = resolverRotuloPorIndice(
+        classIdx = classIdx,
+        numClasses = if (architecture == ModelArchitecture.YOLO_RAW) yoloNumClasses else modelLabels.size,
+        modelLabels = modelLabels,
+        customLabels = customLabels,
+        fallbackDefault = defaultLabel
+    )
+
     data class ResultadoDeteccao(
         val deteccoes: List<Detection>,
         val larguraImagem: Float,
@@ -579,6 +578,32 @@ class ObjectDetectorHelper(
     }
 
     companion object {
+        val DEFAULT_4CLASS_DOENCA_LABELS = listOf("PodridaoParda", "Moniliase", "Sadio", "VassouraBruxa")
+
+        fun resolverRotuloPorIndice(
+            classIdx: Int,
+            numClasses: Int,
+            modelLabels: List<String>,
+            customLabels: List<String>,
+            fallbackDefault: String
+        ): String {
+            modelLabels.getOrNull(classIdx)?.takeIf { it.isNotBlank() }?.let { return it }
+            if (numClasses == 4) {
+                val especificos = customLabels.filter { lbl ->
+                    val low = lbl.trim().lowercase()
+                    low.isNotEmpty() && low != "cacau" && low != "fruto" && low != "objeto"
+                }
+                if (especificos.size >= 4) {
+                    especificos.getOrNull(classIdx)?.let { return it }
+                }
+                DEFAULT_4CLASS_DOENCA_LABELS.getOrNull(classIdx)?.let { return it }
+            }
+            if (numClasses > 1) {
+                customLabels.getOrNull(classIdx)?.takeIf { it.isNotBlank() }?.let { return it }
+            }
+            return fallbackDefault.ifBlank { "objeto" }
+        }
+
         /**
          * Extrai rótulos (labelmap.txt / labels.txt) eventualmente embutidos nos metadados ZIP do .tflite.
          */

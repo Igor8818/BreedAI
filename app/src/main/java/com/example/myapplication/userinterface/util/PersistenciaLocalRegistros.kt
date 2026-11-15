@@ -347,24 +347,36 @@ object PersistenciaLocalRegistros {
             val externoNome = prefs.getString(KEY_EXTERNO_NOME, "") ?: ""
             val labelsJson = prefs.getString(KEY_LABELS, null)
 
+            val labelsPadrao = com.example.myapplication.data.LABELS_DOENCA_CACAU + listOf("cacau", "fruto")
             val labels = if (!labelsJson.isNullOrBlank()) {
                 try {
                     val arr = JSONArray(labelsJson)
                     (0 until arr.length()).map { arr.getString(it) }
                 } catch (_: Exception) {
-                    listOf("cacau", "fruto")
+                    labelsPadrao
                 }
             } else {
-                listOf("cacau", "fruto")
+                labelsPadrao
             }
 
             val usaCustom = !internoPath.isNullOrBlank() || !externoUriStr.isNullOrBlank()
+            val usarMigracaoPadrao = !usaCustom &&
+                modeloArquivo == "detector.tflite" &&
+                labels.map { it.lowercase() }.toSet() == setOf("cacau", "fruto")
+
             val modeloEmbutido = if (!usaCustom) {
-                MODELOS_EMBUTIDOS.firstOrNull { it.nomeArquivo == modeloArquivo }
-                    ?: MODELOS_EMBUTIDOS.firstOrNull()
+                if (usarMigracaoPadrao) {
+                    MODELOS_EMBUTIDOS.firstOrNull { it.nomeArquivo == "detector_doenca.tflite" }
+                        ?: MODELOS_EMBUTIDOS.firstOrNull()
+                } else {
+                    MODELOS_EMBUTIDOS.firstOrNull { it.nomeArquivo == modeloArquivo }
+                        ?: MODELOS_EMBUTIDOS.firstOrNull()
+                }
             } else {
                 null
             }
+
+            val labelsEfetivas = if (usarMigracaoPadrao) labelsPadrao else labels
 
             val externoUri = if (internoPath.isNullOrBlank() && !externoUriStr.isNullOrBlank()) {
                 safeParseUri(externoUriStr)
@@ -375,7 +387,7 @@ object PersistenciaLocalRegistros {
                 modeloInternoPath = internoPath,
                 modeloExternoUri = externoUri,
                 modeloExternoNome = externoNome,
-                labelsFiltro = labels,
+                labelsFiltro = labelsEfetivas,
                 threshold = threshold,
                 maxResultados = maxResultados
             )
