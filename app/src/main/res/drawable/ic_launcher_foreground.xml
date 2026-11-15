@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Caule / Raminho superior -->
+    <path
+        android:pathData="M54,34 C54,30 52,24 48,22"
+        android:strokeColor="#795548"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round" />
+
+    <!-- Folha Verde de Cacau (CEPEC) -->
+    <path
+        android:pathData="M52,28 C44,24 34,28 32,36 C38,42 48,40 52,32 Z"
+        android:fillColor="#4CAF50" />
+    <path
+        android:pathData="M50,30 C44,32 38,34 32,36"
+        android:strokeColor="#1B5E20"
+        android:strokeWidth="1.2"
+        android:strokeLineCap="round" />
+
+    <!-- Fruto do Cacau (Corpo Principal - Ouro/Âmbar Ripe) -->
+    <path
+        android:pathData="M54,34 C41,34 35,46 35,59 C35,71 45,79 54,83 C63,79 73,71 73,59 C73,46 67,34 54,34 Z"
+        android:fillColor="#F59E0B" />
+
+    <!-- Sombra/volume lateral do fruto -->
+    <path
+        android:pathData="M35,59 C35,71 45,79 54,83 C49,79 43,72 41,60 C40,51 43,40 54,34 C41,34 35,46 35,59 Z"
+        android:fillColor="#D97706" />
+
+    <!-- Sulcos longitudinais característicos do cacau (ridges) -->
+    <path
+        android:pathData="M54,34 C45,39 40,49 40,60 C40,70 47,78 54,83"
+        android:strokeColor="#B45309"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round" />
+
+    <path
+        android:pathData="M54,34 C63,39 68,49 68,60 C68,70 61,78 54,83"
+        android:strokeColor="#B45309"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round" />
+
+    <path
+        android:pathData="M54,34 C52,48 52,68 54,83"
+        android:strokeColor="#92400E"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round" />
+
+    <!-- Realce / Brilho de frescor no fruto (Luz natural da mata) -->
+    <path
+        android:pathData="M46,42 C44,48 44,56 46,64"
+        android:strokeColor="#FEF08A"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round" />
+
+    <path
+        android:pathData="M49,44 C48,49 48,54 49,58"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.2"
+        android:strokeAlpha="0.75"
+        android:strokeLineCap="round" />
+
+    <!-- Bounding Box Tecnológica IA/YOLO sutil (marca registrada do CacauApp) -->
+    <path
+        android:pathData="M31,31 L37,31 M31,31 L31,37"
+        android:strokeColor="#00E676"
+        android:strokeWidth="2"
+        android:strokeLineCap="square" />
+    <path
+        android:pathData="M77,31 L71,31 M77,31 L77,37"
+        android:strokeColor="#00E676"
+        android:strokeWidth="2"
+        android:strokeLineCap="square" />
+    <path
+        android:pathData="M31,86 L37,86 M31,86 L31,80"
+        android:strokeColor="#00E676"
+        android:strokeWidth="2"
+        android:strokeLineCap="square" />
+    <path
+        android:pathData="M77,86 L71,86 M77,86 L77,80"
+        android:strokeColor="#00E676"
+        android:strokeWidth="2"
+        android:strokeLineCap="square" />
+
+</vector>

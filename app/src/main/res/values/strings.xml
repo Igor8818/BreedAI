@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">BreedAI</string>
+    <string name="app_description">Coleta em Campo e Visão Computacional Multi-Modelos</string>
+    <string name="institution_name">BreedAI • Fenotipagem IA</string>
+</resources>
