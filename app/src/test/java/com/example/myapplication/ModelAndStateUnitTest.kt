@@ -10,6 +10,7 @@ import com.example.myapplication.data.TipoVariavelExtra
 import com.example.myapplication.data.VariavelExtra
 import com.example.myapplication.data.variaveisExtrasIniciais
 import com.example.myapplication.userinterface.CaixaAuditavel
+import com.example.myapplication.userinterface.util.ObjectDetectorHelper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -160,5 +161,42 @@ class ModelAndStateUnitTest {
             caixas = emptyList()
         )
         assertFalse(regNaoAvaliavelInvalido.isConcordante())
+    }
+
+    @Test
+    fun `refinarClasseDoencaPorMorfologiaCor distingue VassouraBruxa seca escura de PodridaoParda quente`() {
+        val w = 100
+        val h = 100
+        val pxVassoura = (0xFF shl 24) or (115 shl 16) or (105 shl 8) or 102
+        val gridVassoura = IntArray(w * h) { pxVassoura }
+        val clsVassoura = ObjectDetectorHelper.refinarClasseDoencaPorMorfologiaCor(
+            classIdx = 0,
+            probBest = 0.88f,
+            probClass0 = 0.88f,
+            pixels = gridVassoura,
+            width = w,
+            height = h,
+            x1Tensor = 10f,
+            y1Tensor = 10f,
+            x2Tensor = 90f,
+            y2Tensor = 90f
+        )
+        assertEquals(3, clsVassoura)
+
+        val pxPodridao = (0xFF shl 24) or (215 shl 16) or (190 shl 8) or 140
+        val gridPodridao = IntArray(w * h) { pxPodridao }
+        val clsPodridao = ObjectDetectorHelper.refinarClasseDoencaPorMorfologiaCor(
+            classIdx = 0,
+            probBest = 0.90f,
+            probClass0 = 0.90f,
+            pixels = gridPodridao,
+            width = w,
+            height = h,
+            x1Tensor = 10f,
+            y1Tensor = 10f,
+            x2Tensor = 90f,
+            y2Tensor = 90f
+        )
+        assertEquals(0, clsPodridao)
     }
 }

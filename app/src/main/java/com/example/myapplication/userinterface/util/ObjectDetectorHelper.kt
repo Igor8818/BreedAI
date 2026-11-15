@@ -400,7 +400,7 @@ class ObjectDetectorHelper(
                 }
                 val needsSigmoid = (minSampleScore < -0.001f || maxSampleScore > 1.001f)
 
-                val candidates = mutableListOf<FloatArray>() // [normCx, normCy, normW, normH, prob, classIdx]
+                val candidates = mutableListOf<FloatArray>() // [normCx, normCy, normW, normH, prob, classIdx, probClass0]
 
                 for (i in 0 until yoloNumAnchors) {
                     val normCx: Float
@@ -409,12 +409,14 @@ class ObjectDetectorHelper(
                     val normH: Float
                     var rawScore = -Float.MAX_VALUE
                     var bestClass = 0
+                    val rawClass0: Float
 
                     if (yoloTransposed) {
                         normCx = out[0][0][i] * scaleX
                         normCy = out[0][1][i] * scaleY
                         normW  = out[0][2][i] * scaleX
                         normH  = out[0][3][i] * scaleY
+                        rawClass0 = out[0][4][i]
                         for (c in 0 until yoloNumClasses) {
                             val s = out[0][4 + c][i]
                             if (s > rawScore) {
@@ -427,6 +429,7 @@ class ObjectDetectorHelper(
                         normCy = out[0][i][1] * scaleY
                         normW  = out[0][i][2] * scaleX
                         normH  = out[0][i][3] * scaleY
+                        rawClass0 = out[0][i][4]
                         for (c in 0 until yoloNumClasses) {
                             val s = out[0][i][4 + c]
                             if (s > rawScore) {
@@ -437,6 +440,7 @@ class ObjectDetectorHelper(
                     }
 
                     val prob = if (needsSigmoid) sigmoid(rawScore) else rawScore.coerceIn(0f, 1f)
+                    val probClass0 = if (needsSigmoid) sigmoid(rawClass0) else rawClass0.coerceIn(0f, 1f)
 
                     // Filtra: score >= threshold e tamanho de fruto realista (1.5% a 98% do quadro)
                     if (prob >= scoreThreshold &&
@@ -445,7 +449,7 @@ class ObjectDetectorHelper(
                         normCx > 0.005f && normCy > 0.005f &&
                         normCx < 0.995f && normCy < 0.995f
                     ) {
-                        candidates.add(floatArrayOf(normCx, normCy, normW, normH, prob, bestClass.toFloat()))
+                        candidates.add(floatArrayOf(normCx, normCy, normW, normH, prob, bestClass.toFloat(), probClass0))
                     }
                 }
 
@@ -465,7 +469,23 @@ class ObjectDetectorHelper(
 
                     if (right <= left || bottom <= top) continue
 
-                    val classIdx = box[5].toInt()
+                    val rawClassIdx = box[5].toInt()
+                    val classIdx = if (yoloNumClasses == 4) {
+                        refinarClasseDoencaPorMorfologiaCor(
+                            classIdx = rawClassIdx,
+                            probBest = box[4],
+                            probClass0 = if (box.size > 6) box[6] else 0f,
+                            pixels = pixels,
+                            width = inputWidth,
+                            height = inputHeight,
+                            x1Tensor = x1Tensor,
+                            y1Tensor = y1Tensor,
+                            x2Tensor = x2Tensor,
+                            y2Tensor = y2Tensor
+                        )
+                    } else {
+                        rawClassIdx
+                    }
                     val label = resolverRotuloClasse(classIdx)
 
                     finalDetections.add(
@@ -602,6 +622,77 @@ class ObjectDetectorHelper(
                 customLabels.getOrNull(classIdx)?.takeIf { it.isNotBlank() }?.let { return it }
             }
             return fallbackDefault.ifBlank { "objeto" }
+        }
+
+        internal fun refinarClasseDoencaPorMorfologiaCor(
+            classIdx: Int,
+            probBest: Float,
+            probClass0: Float,
+            pixels: IntArray,
+            width: Int,
+            height: Int,
+            x1Tensor: Float,
+            y1Tensor: Float,
+            x2Tensor: Float,
+            y2Tensor: Float
+        ): Int {
+            if (classIdx != 0 && !(classIdx == 2 && probBest < 0.72f && probClass0 >= 0.20f)) {
+                return classIdx
+            }
+            val bw = x2Tensor - x1Tensor
+            val bh = y2Tensor - y1Tensor
+            if (bw < 4f || bh < 4f) return classIdx
+
+            val startX = (x1Tensor + bw * 0.15f).toInt().coerceIn(0, width - 1)
+            val endX = (x2Tensor - bw * 0.15f).toInt().coerceIn(startX + 1, width)
+            val startY = (y1Tensor + bh * 0.15f).toInt().coerceIn(0, height - 1)
+            val endY = (y2Tensor - bh * 0.15f).toInt().coerceIn(startY + 1, height)
+
+            var rSum = 0f
+            var gSum = 0f
+            var bSum = 0f
+            var satSum = 0f
+            var valSum = 0f
+            var count = 0
+
+            val stepY = ((endY - startY) / 24).coerceAtLeast(1)
+            val stepX = ((endX - startX) / 24).coerceAtLeast(1)
+
+            var y = startY
+            while (y < endY) {
+                val rowOffset = y * width
+                var x = startX
+                while (x < endX) {
+                    val px = pixels[rowOffset + x]
+                    val r = ((px shr 16) and 0xFF) / 255f
+                    val g = ((px shr 8) and 0xFF) / 255f
+                    val b = (px and 0xFF) / 255f
+                    val cmax = maxOf(r, g, b)
+                    val cmin = minOf(r, g, b)
+                    val sat = if (cmax > 0.001f) (cmax - cmin) / cmax else 0f
+                    rSum += r
+                    gSum += g
+                    bSum += b
+                    satSum += sat
+                    valSum += cmax
+                    count++
+                    x += stepX
+                }
+                y += stepY
+            }
+
+            if (count == 0) return classIdx
+            val rMean = rSum / count
+            val bMean = bSum / count
+            val satMean = satSum / count
+            val valMean = valSum / count
+            val rbDiff = rMean - bMean
+
+            return if (classIdx == 0) {
+                if (rbDiff < 0.145f && satMean < 0.265f && valMean < 0.68f) 3 else 0
+            } else {
+                if (rbDiff < 0.10f && satMean < 0.20f && valMean < 0.58f) 3 else classIdx
+            }
         }
 
         /**
