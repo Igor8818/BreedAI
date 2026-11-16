@@ -16,6 +16,12 @@
 # debugging stack traces.
 #-keepattributes SourceFile,LineNumberTable
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Mantém classes JNI do TensorFlow Lite, CameraX e modelos serializáveis no build Release (Google Play AAB)
+-keep class org.tensorflow.lite.** { *; }
+-dontwarn org.tensorflow.lite.**
+-keep class org.tensorflow.lite.support.** { *; }
+-keep class org.tensorflow.lite.task.** { *; }
+
+-keep class androidx.camera.** { *; }
+-keep class com.example.myapplication.data.** { *; }
+-keep class com.example.myapplication.userinterface.CaixaAuditavel { *; }

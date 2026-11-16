@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -58,6 +59,7 @@ fun TelaConfiguracaoModelo(
     var labelsTexto by remember(configAtual) { mutableStateOf(configAtual.labelsFiltro.joinToString(", ")) }
     var thresholdTexto by remember(configAtual) { mutableStateOf((configAtual.threshold * 100).toInt().toString()) }
     var maxResultados by remember(configAtual) { mutableIntStateOf(configAtual.maxResultados) }
+    var usarModeloSecundario by remember(configAtual) { mutableStateOf(configAtual.usarModeloSecundario) }
     var novoLabel by remember { mutableStateOf("") }
     var processandoArquivo by remember { mutableStateOf(false) }
 
@@ -89,6 +91,9 @@ fun TelaConfiguracaoModelo(
                     importado.maxResultados?.let {
                         maxResultados = it
                     }
+                    importado.usarModeloSecundario?.let {
+                        usarModeloSecundario = it
+                    }
                     Toast.makeText(
                         context,
                         msgImport,
@@ -105,305 +110,366 @@ fun TelaConfiguracaoModelo(
         }
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        contentPadding = PaddingValues(vertical = 16.dp)
-    ) {
-        // ── SEÇÃO 1: MODELOS EMBUTIDOS ──
-        item {
-            SectionHeader(icon = Icons.Default.Memory, title = "1. Modelo Pré-Carregado no App")
-        }
+    val threshold = (thresholdTexto.toIntOrNull() ?: 30).coerceIn(10, 95) / 100f
+    val configMontada = ModelConfig(
+        modeloSelecionado = modeloSelecionado,
+        modeloInternoPath = modeloInternoPath,
+        modeloExternoUri = modeloExternoUri,
+        modeloExternoNome = modeloExternoNome.trim(),
+        labelsFiltro = listaLabels,
+        threshold = threshold,
+        maxResultados = maxResultados,
+        usarModeloSecundario = usarModeloSecundario,
+        modeloSecundarioArquivo = configAtual.modeloSecundarioArquivo
+    )
+    val podeSalvar = modeloSelecionado != null || !modeloInternoPath.isNullOrBlank() || modeloExternoUri != null
 
-        items(MODELOS_EMBUTIDOS) { modelo ->
-            val selecionado = modeloInternoPath.isNullOrBlank() &&
-                    modeloExternoUri == null &&
-                    modeloSelecionado?.nomeArquivo == modelo.nomeArquivo
-            CartaoModeloEmbutido(
-                modelo = modelo,
-                selecionado = selecionado,
-                onClick = {
-                    modeloSelecionado = modelo
-                    modeloInternoPath = null
-                    modeloExternoUri = null
-                    modeloExternoNome = ""
-                    labelsTexto = modelo.labelsDefault.joinToString(", ")
-                }
-            )
-        }
-
-        // ── SEÇÃO 2: IMPORTAR NOVO MODELO / PACOTE ──
-        item {
-            SectionHeader(icon = Icons.Default.FolderOpen, title = "2. Carregar Outro Modelo (.tflite ou .zip)")
-        }
-
-        item {
-            val customAtivo = !modeloInternoPath.isNullOrBlank() || modeloExternoUri != null
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(
-                        width = if (customAtivo) 2.dp else 1.dp,
-                        color = if (customAtivo) verde else Color.LightGray,
-                        shape = RoundedCornerShape(12.dp)
-                    ),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (customAtivo) Color(0xFFE8F5E9) else Color.White
-                ),
-                shape = RoundedCornerShape(12.dp)
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        bottomBar = {
+            Surface(
+                color = Color.White,
+                shadowElevation = 8.dp,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (customAtivo) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CheckCircle, null, tint = verde)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Modelo customizado ativo (salvo no aparelho):", fontSize = 12.sp, color = Color.Gray)
-                        }
-                        OutlinedTextField(
-                            value = modeloExternoNome,
-                            onValueChange = { modeloExternoNome = it },
-                            label = { Text("Nome de Exibição do Modelo") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    } else {
-                        Text(
-                            "Importe qualquer modelo TFLite (YOLOv8, YOLOv11, SSD MobileNet) ou um pacote .zip exportado pelo BreedAI.",
-                            fontSize = 13.sp,
-                            color = Color.Gray
-                        )
-                    }
-
-                    Button(
-                        onClick = { launcherModelo.launch("*/*") },
-                        enabled = !processandoArquivo,
-                        colors = ButtonDefaults.buttonColors(containerColor = verde),
-                        modifier = Modifier.fillMaxWidth()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val zip = exportarPacoteModeloZip(context, configMontada)
+                                withContext(Dispatchers.Main) {
+                                    if (zip != null) {
+                                        compartilharArquivoViaAndroid(
+                                            context = context,
+                                            arquivo = zip,
+                                            mimeType = "application/zip",
+                                            tituloChooser = "Exportar / Compartilhar Pacote de Modelo BreedAI"
+                                        )
+                                    } else {
+                                        Toast.makeText(context, "Erro ao empacotar o modelo para exportação.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        },
+                        enabled = podeSalvar && !processandoArquivo,
+                        modifier = Modifier.weight(1f).height(50.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = verde)
                     ) {
-                        if (processandoArquivo) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text("IMPORTANDO...")
-                        } else {
-                            Icon(Icons.Default.Upload, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (customAtivo) "TROCAR MODELO (.tflite / .zip)" else "IMPORTAR MODELO (.tflite / .zip)")
-                        }
+                        Icon(Icons.Default.Share, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("EXPORTAR .ZIP", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                    }
+                    Button(
+                        onClick = { onSalvar(configMontada) },
+                        enabled = podeSalvar && !processandoArquivo,
+                        modifier = Modifier.weight(1.25f).height(50.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = verde)
+                    ) {
+                        Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("APLICAR MODELO", fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
                     }
                 }
             }
         }
+    ) { innerPadding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(vertical = 14.dp)
+        ) {
+            // ── SEÇÃO 1: ESCOLHER MODELO DE VISÃO COMPUTACIONAL ──
+            item {
+                SectionHeader(icon = Icons.Default.Memory, title = "1. Escolher Modelo de Visão Computacional")
+            }
 
-        // ── SEÇÃO 3: RÓTULOS (LABELS) ──
-        item {
-            SectionHeader(icon = Icons.Default.Label, title = "3. Classes / Rótulos do Modelo")
-        }
+            items(MODELOS_EMBUTIDOS) { modelo ->
+                val selecionado = modeloInternoPath.isNullOrBlank() &&
+                        modeloExternoUri == null &&
+                        modeloSelecionado?.nomeArquivo == modelo.nomeArquivo
+                CartaoModeloEmbutido(
+                    modelo = modelo,
+                    selecionado = selecionado,
+                    onClick = {
+                        modeloSelecionado = modelo
+                        modeloInternoPath = null
+                        modeloExternoUri = null
+                        modeloExternoNome = ""
+                        labelsTexto = modelo.labelsDefault.joinToString(", ")
+                    }
+                )
+            }
 
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF9F9F9))
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        "Defina os rótulos detectados pelo modelo. Se o modelo tiver 2+ classes, você poderá reclassificar objetos na revisão pós-foto. Deixe vazio para contar qualquer classe.",
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
+            item {
+                val customAtivo = !modeloInternoPath.isNullOrBlank() || modeloExternoUri != null
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(
+                            width = if (customAtivo) 2.dp else 1.dp,
+                            color = if (customAtivo) verde else Color(0xFFDCE7DC),
+                            shape = RoundedCornerShape(14.dp)
+                        ),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (customAtivo) Color(0xFFE8F5E9) else Color.White
+                    ),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (customAtivo) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.CheckCircle, null, tint = verde, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Modelo externo ativo:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1B5E20))
+                            }
+                            OutlinedTextField(
+                                value = modeloExternoNome,
+                                onValueChange = { modeloExternoNome = it },
+                                label = { Text("Nome de Exibição") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            Text(
+                                "Compatível com modelos YOLO (.tflite) ou pacotes .zip exportados pelo BreedAI.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF5F6F61)
+                            )
+                        }
 
-                    if (listaLabels.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listaLabels.chunked(2).forEach { linha ->
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                                    linha.forEach { label ->
-                                        LabelChip(
-                                            texto = label,
-                                            onRemover = {
-                                                val nova = listaLabels.toMutableList().also { l -> l.remove(label) }
-                                                labelsTexto = nova.joinToString(", ")
-                                            }
+                        OutlinedButton(
+                            onClick = { launcherModelo.launch("*/*") },
+                            enabled = !processandoArquivo,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = verde),
+                            border = BorderStroke(1.dp, verde),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (processandoArquivo) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = verde, strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("IMPORTANDO...")
+                            } else {
+                                Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    if (customAtivo) "TROCAR MODELO (.TFLITE / .ZIP)" else "IMPORTAR MODELO EXTERNO (.TFLITE / .ZIP)",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── SEÇÃO 2: MODO COMBINADO (2 IAS) ──
+            item {
+                SectionHeader(icon = Icons.Default.AutoAwesome, title = "2. Modo Combinado (2 IAs)")
+            }
+
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(
+                            width = if (usarModeloSecundario) 2.dp else 1.dp,
+                            color = if (usarModeloSecundario) verde else Color(0xFFDCE7DC),
+                            shape = RoundedCornerShape(14.dp)
+                        ),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (usarModeloSecundario) Color(0xFFE8F5E9) else Color.White
+                    ),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                "Contagem + Diagnóstico",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = Color(0xFF1B5E20)
+                            )
+                            Text(
+                                "Usa o modelo de contagem na câmera e classifica doenças automaticamente na revisão.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF4E5E50)
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Switch(
+                            checked = usarModeloSecundario,
+                            onCheckedChange = {
+                                usarModeloSecundario = it
+                                if (it) {
+                                    val baseLabels = (listaLabels + com.example.myapplication.data.LABELS_DOENCA_CACAU + listOf("cacau", "fruto"))
+                                        .distinct()
+                                    labelsTexto = baseLabels.joinToString(", ")
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            // ── SEÇÃO 3: SENSIBILIDADE E CLASSES DETECTADAS ──
+            item {
+                SectionHeader(icon = Icons.Default.Tune, title = "3. Sensibilidade e Classes Detectadas")
+            }
+
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column {
+                            val thresholdVal = thresholdTexto.toIntOrNull()?.coerceIn(1, 99) ?: 30
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Confiança mínima: $thresholdVal%", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
+                                if (thresholdVal > 60) {
+                                    Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFFFFECB3)) {
+                                        Text(
+                                            "Alto",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFFE65100),
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
                                 }
                             }
+                            Slider(
+                                value = thresholdVal.toFloat(),
+                                onValueChange = { thresholdTexto = it.toInt().toString() },
+                                valueRange = 10f..95f,
+                                steps = 16,
+                                colors = SliderDefaults.colors(thumbColor = verde, activeTrackColor = verde)
+                            )
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("10% (mais sensível)", fontSize = 11.sp, color = Color.Gray)
+                                Text("95% (mais restrito)", fontSize = 11.sp, color = Color.Gray)
+                            }
                         }
-                    } else {
-                        Text("Nenhum filtro — todos os objetos detectados serão contados", color = Color.Gray, fontSize = 13.sp)
-                    }
 
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = novoLabel,
-                            onValueChange = { novoLabel = it },
-                            label = { Text("Adicionar classe / rótulo") },
-                            placeholder = { Text("ex: fruto, folha, espiga...") },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
-                        )
-                        IconButton(
-                            onClick = {
-                                val limpo = novoLabel.trim()
-                                if (limpo.isNotBlank()) {
-                                    val nova = listaLabels.toMutableList()
-                                    if (nova.none { it.equals(limpo, ignoreCase = true) }) {
-                                        nova.add(limpo.lowercase(Locale.ROOT))
-                                    }
-                                    labelsTexto = nova.joinToString(", ")
-                                    novoLabel = ""
-                                }
-                            },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(verde)
-                        ) {
-                            Icon(Icons.Default.Add, null, tint = Color.White)
-                        }
-                    }
+                        HorizontalDivider(color = Color(0xFFEEF3EE))
 
-                    if (listaLabels.isNotEmpty()) {
-                        TextButton(
-                            onClick = { labelsTexto = "" },
-                            colors = ButtonDefaults.textButtonColors(contentColor = Color.Red)
-                        ) {
-                            Icon(Icons.Default.ClearAll, null)
-                            Spacer(Modifier.width(4.dp))
-                            Text("Aceitar todas as classes")
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── SEÇÃO 4: PARÂMETROS DE DETECÇÃO ──
-        item {
-            SectionHeader(icon = Icons.Default.Tune, title = "4. Parâmetros de Confiança e Limite")
-        }
-
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFF9F9F9))
-            ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Column {
-                        val thresholdVal = thresholdTexto.toIntOrNull()?.coerceIn(1, 99) ?: 30
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Confiança mínima: $thresholdVal%", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                            if (thresholdVal > 60) {
-                                Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFFFFECB3)) {
-                                    Text(
-                                        "Alto",
-                                        fontSize = 11.sp,
-                                        color = Color(0xFFE65100),
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
+                            Text("Limite por foto", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { if (maxResultados > 1) maxResultados-- }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Default.RemoveCircle, null, tint = Color(0xFFC62828), modifier = Modifier.size(28.dp))
+                                }
+                                Text("$maxResultados", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 12.dp))
+                                IconButton(onClick = { if (maxResultados < 50) maxResultados++ }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Default.AddCircle, null, tint = verde, modifier = Modifier.size(28.dp))
                                 }
                             }
                         }
-                        Slider(
-                            value = thresholdVal.toFloat(),
-                            onValueChange = { thresholdTexto = it.toInt().toString() },
-                            valueRange = 10f..95f,
-                            steps = 16,
-                            colors = SliderDefaults.colors(thumbColor = verde, activeTrackColor = verde)
-                        )
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("10% (mais sensível)", fontSize = 11.sp, color = Color.Gray)
-                            Text("95% (mais restrito)", fontSize = 11.sp, color = Color.Gray)
+
+                        HorizontalDivider(color = Color(0xFFEEF3EE))
+
+                        Text("Classes / Rótulos filtrados", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF1B5E20))
+
+                        if (listaLabels.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listaLabels.chunked(2).forEach { linha ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                                        linha.forEach { label ->
+                                            LabelChip(
+                                                texto = label,
+                                                onRemover = {
+                                                    val nova = listaLabels.toMutableList().also { l -> l.remove(label) }
+                                                    labelsTexto = nova.joinToString(", ")
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Text("Sem filtro: aceita todas as classes do modelo.", color = Color.Gray, fontSize = 12.sp)
                         }
-                    }
 
-                    HorizontalDivider()
-
-                    Column {
-                        Text("Máximo de detecções por foto: $maxResultados", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.fillMaxWidth()
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            IconButton(onClick = { if (maxResultados > 1) maxResultados-- }) {
-                                Icon(Icons.Default.RemoveCircle, null, tint = Color.Red, modifier = Modifier.size(36.dp))
+                            OutlinedTextField(
+                                value = novoLabel,
+                                onValueChange = { novoLabel = it },
+                                label = { Text("Adicionar classe") },
+                                placeholder = { Text("ex: fruto, espiga...") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                            IconButton(
+                                onClick = {
+                                    val limpo = novoLabel.trim()
+                                    if (limpo.isNotBlank()) {
+                                        val nova = listaLabels.toMutableList()
+                                        if (nova.none { it.equals(limpo, ignoreCase = true) }) {
+                                            nova.add(limpo.lowercase(Locale.ROOT))
+                                        }
+                                        labelsTexto = nova.joinToString(", ")
+                                        novoLabel = ""
+                                    }
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(verde)
+                            ) {
+                                Icon(Icons.Default.Add, null, tint = Color.White)
                             }
-                            Text("$maxResultados", fontSize = 28.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 24.dp))
-                            IconButton(onClick = { if (maxResultados < 50) maxResultados++ }) {
-                                Icon(Icons.Default.AddCircle, null, tint = verde, modifier = Modifier.size(36.dp))
+                        }
+
+                        if (listaLabels.isNotEmpty()) {
+                            TextButton(
+                                onClick = { labelsTexto = "" },
+                                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFC62828)),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.ClearAll, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Aceitar todas as classes", fontSize = 12.sp)
                             }
                         }
                     }
                 }
             }
-        }
 
-        // ── AÇÕES: SALVAR E EXPORTAR PACOTE ──
-        item {
-            val threshold = (thresholdTexto.toIntOrNull() ?: 30).coerceIn(10, 95) / 100f
-            val configMontada = ModelConfig(
-                modeloSelecionado = modeloSelecionado,
-                modeloInternoPath = modeloInternoPath,
-                modeloExternoUri = modeloExternoUri,
-                modeloExternoNome = modeloExternoNome.trim(),
-                labelsFiltro = listaLabels,
-                threshold = threshold,
-                maxResultados = maxResultados
-            )
-            val podeSalvar = modeloSelecionado != null || !modeloInternoPath.isNullOrBlank() || modeloExternoUri != null
-
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = { onSalvar(configMontada) },
-                    enabled = podeSalvar && !processandoArquivo,
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = verde)
-                ) {
-                    Icon(Icons.Default.CheckCircle, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("ATIVAR MODELO E IR PARA FORMULÁRIO", fontWeight = FontWeight.Bold)
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        coroutineScope.launch(Dispatchers.IO) {
-                            val zip = exportarPacoteModeloZip(context, configMontada)
-                            withContext(Dispatchers.Main) {
-                                if (zip != null) {
-                                    compartilharArquivoViaAndroid(
-                                        context = context,
-                                        arquivo = zip,
-                                        mimeType = "application/zip",
-                                        tituloChooser = "Exportar / Compartilhar Pacote de Modelo BreedAI"
-                                    )
-                                } else {
-                                    Toast.makeText(context, "Erro ao empacotar o modelo para exportação.", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        }
-                    },
-                    enabled = podeSalvar && !processandoArquivo,
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = verde)
-                ) {
-                    Icon(Icons.Default.Share, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("EXPORTAR / COMPARTILHAR MODELO (.ZIP)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                }
+            item {
+                Spacer(Modifier.height(12.dp))
             }
-            Spacer(Modifier.height(16.dp))
         }
     }
 }
@@ -413,7 +479,8 @@ private data class ModeloImportado(
     val nomeExibicao: String,
     val labels: List<String>,
     val threshold: Float? = null,
-    val maxResultados: Int? = null
+    val maxResultados: Int? = null,
+    val usarModeloSecundario: Boolean? = null
 )
 
 private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloImportado? {
@@ -457,7 +524,8 @@ private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloI
                     nomeExibicao = manifest?.nomeExibicao?.ifBlank { nomeOriginal } ?: nomeOriginal,
                     labels = labels,
                     threshold = manifest?.threshold,
-                    maxResultados = manifest?.maxResultados
+                    maxResultados = manifest?.maxResultados,
+                    usarModeloSecundario = manifest?.usarModeloSecundario
                 )
             }
         }

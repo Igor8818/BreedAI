@@ -274,6 +274,80 @@ internal fun fundirDeteccoesComSnapping(
     return resultado
 }
 
+internal fun fundirContagemEDiagnosticoBreedAI(
+    caixasContagem: List<DetEstilizada>,
+    deteccoesSecundarias: List<DetEstilizada>,
+    iouMinimo: Float = 0.30f
+): List<DetEstilizada> {
+    if (deteccoesSecundarias.isEmpty()) return caixasContagem
+    if (caixasContagem.isEmpty()) return deteccoesSecundarias
+
+    val resultado = mutableListOf<DetEstilizada>()
+    val pareadosSecundario = mutableSetOf<Int>()
+
+    for (base in caixasContagem) {
+        var melhorIdx = -1
+        var melhorScore = -1f
+
+        for (i in deteccoesSecundarias.indices) {
+            val sec = deteccoesSecundarias[i]
+            val iou = iouCaixasNorm(
+                base.normLeft, base.normTop, base.normRight, base.normBottom,
+                sec.normLeft, sec.normTop, sec.normRight, sec.normBottom
+            )
+            val cxSec = (sec.normLeft + sec.normRight) / 2f
+            val cySec = (sec.normTop + sec.normBottom) / 2f
+            val centroDentro = cxSec in base.normLeft..base.normRight &&
+                    cySec in base.normTop..base.normBottom
+
+            if (iou >= iouMinimo || centroDentro) {
+                val pontuacao = iou + if (centroDentro) 0.15f else 0f
+                if (pontuacao > melhorScore) {
+                    melhorScore = pontuacao
+                    melhorIdx = i
+                }
+            }
+        }
+
+        if (melhorIdx >= 0) {
+            pareadosSecundario.add(melhorIdx)
+            val sec = deteccoesSecundarias[melhorIdx]
+            val rotuloFinal = if (!isRotuloGenerico(sec.rotulo)) sec.rotulo else base.rotulo
+            resultado.add(
+                base.copy(
+                    rotulo = rotuloFinal,
+                    confianca = maxOf(base.confianca, sec.confianca)
+                )
+            )
+        } else {
+            resultado.add(base)
+        }
+    }
+
+    for (i in deteccoesSecundarias.indices) {
+        if (i in pareadosSecundario) continue
+        val sec = deteccoesSecundarias[i]
+        if (isRotuloGenerico(sec.rotulo) || sec.confianca < 0.45f) continue
+
+        val cxSec = (sec.normLeft + sec.normRight) / 2f
+        val cySec = (sec.normTop + sec.normBottom) / 2f
+        val colideComContagem = caixasContagem.any { base ->
+            val iou = iouCaixasNorm(
+                base.normLeft, base.normTop, base.normRight, base.normBottom,
+                sec.normLeft, sec.normTop, sec.normRight, sec.normBottom
+            )
+            val centroDentro = cxSec in base.normLeft..base.normRight &&
+                    cySec in base.normTop..base.normBottom
+            iou >= 0.20f || centroDentro
+        }
+        if (!colideComContagem) {
+            resultado.add(sec)
+        }
+    }
+
+    return resultado
+}
+
 @Composable
 fun TelaRevisaoCaptura(
     fotoUri: Uri,
@@ -282,6 +356,7 @@ fun TelaRevisaoCaptura(
     bitmapWidthRef: Float,
     bitmapHeightRef: Float,
     detectorHelper: ObjectDetectorHelper? = null,
+    detectorSecundarioHelper: ObjectDetectorHelper? = null,
     labelsFiltro: List<String> = emptyList(),
     caixasAuditadasIniciais: List<CaixaAuditavel>? = null,
     modoSemFrutos: Boolean = false,
@@ -381,16 +456,17 @@ fun TelaRevisaoCaptura(
                     val bmpW = bmp.width.toFloat()
                     val bmpH = bmp.height.toFloat()
 
-                    val candidatasEstaticas = mutableListOf<DetEstilizada>()
+                    val candidatasContagem = mutableListOf<DetEstilizada>()
                     res.deteccoes.forEach { det ->
                         val cat = det.categories.firstOrNull()
                         val label = (cat?.label ?: rotuloPadrao).lowercase(Locale.ROOT)
                         val labelValido = labelsFiltro.isEmpty() ||
-                                labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) }
+                                labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) } ||
+                                label == "cacau" || label == "fruto" || label == "objeto"
                         if (!labelValido) return@forEach
 
                         val r = det.boundingBox
-                        candidatasEstaticas.add(
+                        candidatasContagem.add(
                             DetEstilizada(
                                 normLeft = (r.left / bmpW).coerceIn(0f, 1f),
                                 normTop = (r.top / bmpH).coerceIn(0f, 1f),
@@ -400,6 +476,25 @@ fun TelaRevisaoCaptura(
                                 rotulo = cat?.label?.takeIf { it.isNotBlank() } ?: rotuloPadrao
                             )
                         )
+                    }
+
+                    val candidatasEstaticas = if (detectorSecundarioHelper != null) {
+                        val resSec = detectorSecundarioHelper.detectarSincrono(bmp)
+                        val detsSec = resSec?.deteccoes?.mapNotNull { det ->
+                            val cat = det.categories.firstOrNull() ?: return@mapNotNull null
+                            val r = det.boundingBox
+                            DetEstilizada(
+                                normLeft = (r.left / bmpW).coerceIn(0f, 1f),
+                                normTop = (r.top / bmpH).coerceIn(0f, 1f),
+                                normRight = (r.right / bmpW).coerceIn(0f, 1f),
+                                normBottom = (r.bottom / bmpH).coerceIn(0f, 1f),
+                                confianca = cat.score,
+                                rotulo = cat.label.takeIf { it.isNotBlank() } ?: rotuloPadrao
+                            )
+                        } ?: emptyList()
+                        fundirContagemEDiagnosticoBreedAI(candidatasContagem, detsSec)
+                    } else {
+                        candidatasContagem
                     }
 
                     withContext(Dispatchers.Main) {
@@ -782,6 +877,28 @@ fun TelaRevisaoCaptura(
                                 ChipResumo("IA", totalIA, Color(0xFF69F0AE))
                                 ChipResumo("Manuais", totalManuais, Color(0xFF1565C0))
                             }
+                            if (totalManuais > 0) {
+                                OutlinedButton(
+                                    onClick = {
+                                        val idxUltManual = caixas.indexOfLast { it.manual }
+                                        if (idxUltManual >= 0) {
+                                            caixas.removeAt(idxUltManual)
+                                            if (indiceSelecionado == idxUltManual) {
+                                                indiceSelecionado = -1
+                                            } else if (indiceSelecionado > idxUltManual) {
+                                                indiceSelecionado--
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.height(28.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF90CAF9)),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF64B5F6))
+                                ) {
+                                    Text("↶ Desfazer Manual", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
 
@@ -864,16 +981,22 @@ private fun ChipResumo(rotulo: String, total: Int, cor: Color) {
     }
 }
 
-internal fun iouNorm(c: CaixaAuditavel, l: Float, t: Float, r: Float, b: Float): Float {
-    val interL = maxOf(c.normLeft, l)
-    val interT = maxOf(c.normTop, t)
-    val interR = minOf(c.normRight, r)
-    val interB = minOf(c.normBottom, b)
+internal fun iouNorm(c: CaixaAuditavel, l: Float, t: Float, r: Float, b: Float): Float =
+    iouCaixasNorm(c.normLeft, c.normTop, c.normRight, c.normBottom, l, t, r, b)
+
+internal fun iouCaixasNorm(
+    l1: Float, t1: Float, r1: Float, b1: Float,
+    l2: Float, t2: Float, r2: Float, b2: Float
+): Float {
+    val interL = maxOf(l1, l2)
+    val interT = maxOf(t1, t2)
+    val interR = minOf(r1, r2)
+    val interB = minOf(b1, b2)
     val w = maxOf(0f, interR - interL)
     val h = maxOf(0f, interB - interT)
     val inter = w * h
-    val area1 = (c.normRight - c.normLeft) * (c.normBottom - c.normTop)
-    val area2 = (r - l) * (b - t)
+    val area1 = maxOf(0f, r1 - l1) * maxOf(0f, b1 - t1)
+    val area2 = maxOf(0f, r2 - l2) * maxOf(0f, b2 - t2)
     val union = area1 + area2 - inter
     return if (union <= 0f) 0f else inter / union
 }

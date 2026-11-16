@@ -162,6 +162,25 @@ class YoloDetectionAndScaleUnitTest {
         )
     }
 
+    @Test
+    fun testFundirContagemEDiagnosticoBreedAI_UpgradesGenericLabelsAndKeepsCount() {
+        val contagem = listOf(
+            com.example.myapplication.userinterface.DetEstilizada(0.10f, 0.10f, 0.30f, 0.40f, 0.90f, "cacau"),
+            com.example.myapplication.userinterface.DetEstilizada(0.50f, 0.20f, 0.70f, 0.50f, 0.86f, "cacau")
+        )
+        val secundario = listOf(
+            com.example.myapplication.userinterface.DetEstilizada(0.11f, 0.11f, 0.29f, 0.39f, 0.79f, "VassouraBruxa"),
+            com.example.myapplication.userinterface.DetEstilizada(0.20f, 0.65f, 0.40f, 0.90f, 0.72f, "PodridaoParda")
+        )
+
+        val resultado = com.example.myapplication.userinterface.fundirContagemEDiagnosticoBreedAI(contagem, secundario)
+
+        assertEquals(3, resultado.size)
+        assertEquals("VassouraBruxa", resultado[0].rotulo)
+        assertEquals("cacau", resultado[1].rotulo)
+        assertEquals("PodridaoParda", resultado[2].rotulo)
+    }
+
     private fun nms(boxes: List<FloatArray>, iouThresh: Float = 0.45f): List<FloatArray> {
         val sorted = boxes.sortedByDescending { it[4] }.toMutableList()
         val result = mutableListOf<FloatArray>()
@@ -181,5 +200,57 @@ class YoloDetectionAndScaleUnitTest {
         val inter = max(0f, min(ax2, bx2) - max(ax1, bx1)) * max(0f, min(ay2, by2) - max(ay1, by1))
         val union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
         return if (union <= 0f) 0f else inter / union
+    }
+
+    @Test
+    fun `testExtractUltralyticsMetadataLabels_ParsesNamesDictionary`() {
+        val rawMetadata = """
+            task: detect
+            stride: 32
+            names: {0: 'Verde', 1: 'Maduro', 2: "Podre", 3: 'Vassoura'}
+        """.trimIndent()
+
+        val labels = com.example.myapplication.userinterface.util.ObjectDetectorHelper
+            .extrairLabelsMetadadosUltralytics(rawMetadata)
+
+        assertEquals(listOf("Verde", "Maduro", "Podre", "Vassoura"), labels)
+    }
+
+    @Test
+    fun `testYoloEnd2EndNmsDecoding`() {
+        // Modelo End2End [1, N, 6]: cada linha = [x1, y1, x2, y2, score, classId]
+        val rows = arrayOf(
+            floatArrayOf(0.10f, 0.20f, 0.30f, 0.40f, 0.92f, 2f),
+            floatArrayOf(0.50f, 0.50f, 0.70f, 0.70f, 0.15f, 0f), // abaixo do limiar
+            floatArrayOf(0.40f, 0.40f, 0.60f, 0.80f, 0.85f, 1f)
+        )
+
+        val decoded = com.example.myapplication.userinterface.util.ObjectDetectorHelper
+            .decodeYoloEnd2EndNms(
+                out = rows,
+                numRows = rows.size,
+                inputWidth = 640,
+                inputHeight = 640,
+                scoreThreshold = 0.25f
+            )
+
+        assertEquals(2, decoded.size)
+        assertEquals(0.92f, decoded[0][4], 0.001f)
+        assertEquals(2f, decoded[0][5], 0.001f)
+        // [x1=0.10, x2=0.30] -> cx = 0.20 (ou 0.20 * 640 = 128), w = 0.20 (ou 128)
+        assertEquals(0.20f, if (decoded[0][0] > 1f) decoded[0][0] / 640f else decoded[0][0], 0.001f)
+        assertEquals(0.20f, if (decoded[0][2] > 1f) decoded[0][2] / 640f else decoded[0][2], 0.001f)
+
+        // NMS multi-classe deve preservar detecções de classes diferentes com sobreposição moderada
+        val boxesMulti = listOf(
+            floatArrayOf(0.50f, 0.50f, 0.20f, 0.20f, 0.90f, 0f),
+            floatArrayOf(0.52f, 0.52f, 0.20f, 0.20f, 0.80f, 1f), // outra classe, IoU ~0.68 (<0.85) -> mantida
+            floatArrayOf(0.51f, 0.51f, 0.20f, 0.20f, 0.70f, 0f)  // mesma classe, IoU >0.45 -> suprimida
+        )
+        val nmsRes = com.example.myapplication.userinterface.util.ObjectDetectorHelper
+            .nmsMultiClasse(boxesMulti, iouMesmaClasse = 0.45f, iouEntreClasses = 0.85f)
+        assertEquals(2, nmsRes.size)
+        assertEquals(0f, nmsRes[0][5], 0.001f)
+        assertEquals(1f, nmsRes[1][5], 0.001f)
     }
 }

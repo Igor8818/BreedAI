@@ -1,8 +1,13 @@
 <div align="center">
-  <img src="docs/assets/banner_breedai.jpg" alt="BreedAI — Multi-Crop Edge AI & Field Phenotyping" width="100%" />
+  <img src="docs/assets/feature_breedai.jpg" alt="BreedAI — Multi-Crop Edge AI & Field Phenotyping" width="100%" />
 </div>
 
-# 🧬 BreedAI — Fenotipagem Agronômica Multi-Culturas Offline-First & Edge AI
+<br/>
+
+<div align="center">
+  <img src="docs/assets/icon_breedai.png" alt="BreedAI App Icon" width="96" />
+  <h1>BreedAI — Fenotipagem Agronômica Multi-Culturas Offline-First & Edge AI</h1>
+</div>
 
 <p align="center">
   <a href="https://github.com/Igor8818/BreedAI/actions/workflows/android-ci.yml">
@@ -11,16 +16,42 @@
   <img src="https://img.shields.io/badge/Kotlin-2.0.21-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.0" />
   <img src="https://img.shields.io/badge/Android-SDK%2024%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android SDK 24+" />
   <img src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
-  <img src="https://img.shields.io/badge/TensorFlow%20Lite-YOLOv8-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white" alt="TensorFlow Lite" />
-  <img src="https://img.shields.io/badge/Tests-27%20Passed-25A162?style=for-the-badge&logo=junit5&logoColor=white" alt="27 Unit Tests Passing" />
+  <img src="https://img.shields.io/badge/TensorFlow%20Lite-Universal%20YOLO-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white" alt="TensorFlow Lite Universal YOLO" />
+  <img src="https://img.shields.io/badge/Tests-31%20Passed-25A162?style=for-the-badge&logo=junit5&logoColor=white" alt="31 Unit Tests Passing" />
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-0D6E4E?style=for-the-badge" alt="MIT License" />
   </a>
 </p>
 
-Aplicativo Android nativo **100% offline e independente de servidor** para fenotipagem digital em campo com Visão Computacional embarcada (**TensorFlow Lite / YOLOv8**), projetado com foco em usabilidade rápida para melhoramento genético e experimentação agrícola multi-culturas.
+Aplicativo Android nativo **100% offline e independente de servidor** para fenotipagem digital em campo com Visão Computacional embarcada (**TensorFlow Lite / YOLO Universal**), projetado com fluxos inspirados no **Field Book** para melhoramento genético e experimentação agrícola multi-culturas.
 
-> 🌱 **Origem e Evolução Arquitetural:** O **BreedAI** nasceu como a evolução generalista do motor de Visão Computacional *on-device* originalmente validado no ecossistema institucional CEPEC/CEPLAC ([**CacauApp**](https://github.com/Igor8818/CacauApp) + [**CacauSync**](https://github.com/Igor8818/CacauSync)). Enquanto o `CacauApp` é acoplado às regras e API do ensaio de cacau, o **BreedAI** desacopla completamente o back-end e generaliza identificadores, variáveis fenotípicas, planilhas Excel/CSV e modelos `.tflite`/`.zip` para **qualquer cultura ou experimento agronômico**.
+> 🌱 **Evolução Arquitetural:** O **BreedAI** nasceu como a evolução generalista e *open-source* do motor de Visão Computacional *on-device* validado originalmente no ecossistema CEPEC/CEPLAC ([**CacauApp**](https://github.com/Igor8818/CacauApp) + [**CacauSync**](https://github.com/Igor8818/CacauSync)). Enquanto o `CacauApp` atende às regras institucionais do ensaio de cacau, o **BreedAI** desacopla o back-end, generaliza identificadores, variáveis fenotípicas (*Traits*), planilhas Excel/CSV e suporta **qualquer modelo YOLO/SSD `.tflite` sem heurísticas enviesadas por cultura**.
+
+---
+
+## 📸 Experiência Visual (Estilo Field Book + Edge AI)
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="33%">
+        <b>Coleta Livre (Field Book UX)</b><br/><br/>
+        <img src="docs/assets/screen_coleta_livre.png" width="230" alt="Tela Coleta Livre BreedAI" />
+        <br/><sub>Tema verde agronômico, contadores simétricos Parcela/Planta e Traits</sub>
+      </td>
+      <td align="center" width="33%">
+        <b>Menu Lateral do Ensaio</b><br/><br/>
+        <img src="docs/assets/screen_menu_lateral.png" width="230" alt="Menu Lateral BreedAI" />
+        <br/><sub>Acesso rápido ao ensaio ativo, rotas .xlsx/.csv, Traits e modelo IA</sub>
+      </td>
+      <td align="center" width="33%">
+        <b>Detecção YOLO On-Device</b><br/><br/>
+        <img src="docs/assets/screen_deteccao_yolo.png" width="230" alt="Detecção YOLOv8 em Campo" />
+        <br/><sub>Inferência em tempo real + snap geométrico e auditoria pós-foto</sub>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ---
 
@@ -28,11 +59,11 @@ Aplicativo Android nativo **100% offline e independente de servidor** para fenot
 
 | Característica | **BreedAI** (Este Repositório) | **CacauApp + CacauSync** (Ecossistema CEPEC) |
 | :--- | :--- | :--- |
-| **Escopo** | Generalista Multi-Culturas (*Open-Source*) | Vertical Institucional CEPEC / CEPLAC (`TC-1801`) |
+| **Escopo** | Generalista Multi-Culturas (*Open-Source*, Google Play Ready) | Vertical Institucional CEPEC / CEPLAC (`TC-1801`) |
 | **Infraestrutura** | **100% Standalone no Aparelho** (sem servidor) | Mobile + Back-end Spring Boot 3 + PostgreSQL + Web React |
-| **Modelos de IA** | Embutidos + Importação & Exportação **`.zip`** (`model.tflite` + manifesto JSON) | Foco em detecção e doenças do cacaueiro |
+| **Motor de IA** | **Universal YOLO/SSD**: `[1,C,N]`, `[1,N,C]`, **`End2End NMS [1,N,6]`**, **`INT8`/`UINT8`/`FLOAT32`**, leitura de metadados Ultralytics | Foco em detecção e doenças do cacaueiro |
 | **Planilhas de Rota** | Leitura nativa offline de **`.xlsx` (Excel)**, `.csv` e `.tsv` | Rotas `.csv` e envio via ponte USB ADB |
-| **Variáveis de Campo** | **Dinâmicas e configuráveis** (`Numérico`, `Texto`, `Lista de Opções`) | Colunas fitossanitárias fixas do ensaio clonal |
+| **Variáveis de Campo** | **Traits dinâmicos e configuráveis** (`Numérico`, `Texto`, `Lista de Opções`) | Colunas fitossanitárias fixas do ensaio clonal |
 
 ---
 
@@ -42,14 +73,13 @@ Aplicativo Android nativo **100% offline e independente de servidor** para fenot
 flowchart TD
     subgraph Input ["📋 Planejamento & Modelos"]
         XLSX["Planilha Excel (.xlsx / .csv / .tsv)<br/>ImportadorPlanilhaUniversal (ZIP + SAX)"]
-        Models["Modelos .tflite embutidos ou .zip<br/>detector_doenca.tflite &bull; detector.tflite"]
+        Models["Modelos .tflite embutidos ou externos (.tflite / .zip)<br/>Metadata Ultralytics + FLOAT32 / UINT8 / INT8"]
     end
 
     subgraph EdgeAI ["📷 Captura & Edge AI (On-Device)"]
         Cam["CameraX 4:3 + Preview AO VIVO<br/>BoundingBoxOverlay"]
-        Helper["ObjectDetectorHelper<br/>Letterbox Isomórfico 640x640 + NMS"]
-        Refine["Refinamento Fitossanitário Pós-NMS<br/>refinarClasseDoencaPorMorfologiaCor"]
-        Cam --> Helper --> Refine
+        Helper["ObjectDetectorHelper<br/>Letterbox Isomórfico + End2End/NMS Multi-Classe"]
+        Cam --> Helper
     end
 
     subgraph Review ["🔍 Auditoria Human-in-the-Loop"]
@@ -59,13 +89,13 @@ flowchart TD
     end
 
     subgraph Storage ["💾 Persistência Atômica & Exportação"]
-        Atomic["AtomicFile JSON<br/>Coletas, Rota e Variáveis Extras"]
+        Atomic["AtomicFile JSON<br/>Coletas, Rota e Traits"]
         CSV["Exportador CSV UTF-8 BOM<br/>MediaStore (Download/BreedAI) + ShareSheet"]
     end
 
     XLSX --> Cam
     Models --> Helper
-    Refine --> Snap
+    Helper --> Snap
     Actions --> Atomic --> CSV
 ```
 
@@ -73,30 +103,33 @@ flowchart TD
 
 ## ✨ Funcionalidades Principais
 
-### 1. Navegação Direta & UX Enxuta (`NavigationBar`)
-Sem menus hambúrguer ocultos: a barra inferior dá acesso direto em 1 toque aos 5 fluxos principais:
-* **Coleta Livre *(tela inicial)*:** Foco máximo no campo com seleção rápida de **Tratamento** (autocompletar do histórico), contadores ergonômicos (`−` / `+`) para **Parcela** e **Planta** (com aviso quando já coletada), botão rápido **`+ Variáveis`**, registro imediato de **Sem Frutos (0)** ou **Não Coletável** (`Pequena`, `Morta`, `Errada`, `Cavalo`), **Galeria** e **Abrir Câmera**.
-* **Modo Rota:** Navegação sequencial planta a planta (`#1 → #N`) a partir da planilha carregada, destacando tratamento, parcela, planta e progresso da quadra.
-* **Dados (`N`):** Consulta das plantas coletadas com filtros por `SituacaoPlanta`, edição de variáveis extras, reabertura da revisão visual de caixas na foto, exclusão e exportação/compartilhamento de CSV.
-* **Modelo IA:** Gerenciador completo de modelos embarcado no celular.
-* **Ensaio:** Diálogo rápido para renomear a coleta ativa, configurar variáveis extras ou iniciar nova coleta zerada.
+### 1. UX Agronômica Inspirada no Field Book (`BreedAITheme`)
+* **Menu Lateral (`ModalNavigationDrawer`) + Barra Superior Limpa + `NavigationBar` Inferior (4 Abas):**
+  * **Livre *(tela inicial)*:** Foco em velocidade no campo com contadores simétricos para **Parcela** e **Planta** (sinalizando plantas já avaliadas), autocompletar de **Tratamento / Genótipo**, estado fenotípico (`Normal`, `Sem Frutos`, `Não Avaliável`), **Variáveis Fenotípicas (Traits)** e botões diretos para **Galeria** ou **Fotografar Planta**.
+  * **Rota (`N`):** Card de navegação sequencial (`◀` / `▶`) planta a planta a partir da planilha `.xlsx`/`.csv`, com barra de progresso em tempo real.
+  * **Dados (`N`):** Painel de resumo (**Plantas**, **Total Contado**, **Média**), filtros rápidos por situação, edição de Traits, reabertura da revisão visual de caixas na foto e exportação/compartilhamento de CSV.
+  * **Modelo IA:** Seleção de modelos pré-carregados, **Modo Combinado (2 IAs)**, importação permanente de `.tflite` ou pacotes `.zip` e ajuste fino de confiança mínima e classes.
 
-### 2. Multi-Modelos Embutidos & Portabilidade Total (`.tflite` / `.zip`)
-* **Dois modelos YOLOv8 Float32 pré-carregados e prontos para uso offline:**
-  1. `detector_doenca.tflite` — Modelo multi-classe para diagnóstico fitossanitário (`PodridaoParda`, `Moniliase`, `Sadio`, `VassouraBruxa`) com refinamento morfológico/cromático pós-NMS (`refinarClasseDoencaPorMorfologiaCor`) para distinção precisa de frutos vassourados necrosados vs. podridão parda.
-  2. `detector.tflite` — Modelo clássico de contagem geral de frutos.
-* **Importação & Exportação em `.zip`:** Importe qualquer modelo `.tflite` (YOLOv8, YOLOv11 ou SSD) de forma permanente para o armazenamento interno do aparelho, ajuste rótulos (`labelsFiltro`), limiar de confiança e limite de detecções, e **exporte pacotes `.zip`** (`model.tflite` + `model_config.json`) para compartilhar modelos calibrados com toda a equipe.
+### 2. Motor Universal YOLO / TFLite (`ObjectDetectorHelper.kt`)
+* **Multi-Arquitetura Automática:** Decodifica tensores padrão **YOLOv5 / YOLOv8 / YOLOv11** (`[1, C, N]` e `[1, N, C]`), **YOLO End-to-End NMS (`[1, N, 6]`: YOLOv10 / YOLO26)** e modelos **SSD MobileNet**.
+* **Quantização Completa (`FLOAT32`, `UINT8`, `INT8`):** Pré-processamento com tabela de conversão (*LUT*) pré-calculada em byte e dequantização automática dos tensores de saída.
+* **Desacoplamento Multi-Cultura & Metadados Ultralytics:** Extração automática do dicionário `names` embutido em FlatBuffers Ultralytics (`extrairLabelsMetadadosUltralytics`). Regras fitossanitárias específicas do cacau (`isModeloDoencaCacau`) são isoladas e jamais aplicadas a modelos genéricos de outras culturas.
+* **NMS Multi-Classe:** Supressão consciente de classe (`nmsMultiClasse`), preservando objetos de classes diferentes com sobreposição parcial e evitando duplicações na mesma classe.
 
-### 3. Importação Nativa de Planilhas Excel (`.xlsx`) & CSV/TSV
-* **`ImportadorPlanilhaUniversal.kt`:** Lê planilhas **`.xlsx` nativamente offline** via `ZipInputStream` + `SAXParserFactory` (compatível com Android `minSdk 24+` sem dependências pesadas como Apache POI no mobile), além de arquivos `.csv` e `.tsv` com detecção automática de codificação (**UTF-8 BOM** / **Windows-1252**) e delimitadores (`;`, `,`, `\t`, `|`), com mapeamento automático ou assistido das colunas de Tratamento, Parcela e Planta.
+### 3. Multi-Modelos Embutidos & Portabilidade Total (`.tflite` / `.zip`)
+* **Padrão multi-cultura de contagem:** Inicia pronto com `detector.tflite` para contagem geral sem acoplamento fitossanitário, mantendo `detector_doenca.tflite` disponível para diagnóstico multi-classe ou **Modo Combinado (2 IAs)**.
+* **Pacotes `.zip` compartilháveis:** Exporte e importe pacotes contendo `model.tflite` + `model_config.json` para padronizar configurações e rótulos em toda a equipe.
 
-### 4. Pipeline Geométrico Edge AI & Revisão Pós-Foto (`TelaRevisaoCaptura`)
-* **Letterbox Isomórfico + Snap Geométrico:** Mantém a proporção original do fruto na entrada `640x640` do tensor e re-executa inferência estática pós-captura com fusão inteligente (`fundirDeteccoesComSnapping`), eliminando desalinhamentos causados por movimento entre o preview e o obturador.
-* **Auditoria por Toque (*Human-in-the-Loop*):** Em cachos densos, o toque seleciona a caixa cujo centro está mais próximo; permite reclassificar classes com 1 toque, adicionar objetos não detectados, ajustar dimensões (`−` / `+`) e excluir caixas sem que a re-detecção as recrie (*anti-ressurreição*).
+### 4. Importação Nativa de Planilhas Excel (`.xlsx`) & CSV/TSV
+* **`ImportadorPlanilhaUniversal.kt`:** Lê planilhas **`.xlsx` nativamente offline** via `ZipInputStream` + `SAXParserFactory` (compatível com Android `minSdk 24+` sem dependências pesadas), além de `.csv` e `.tsv` (**UTF-8 BOM** / **Windows-1252** e delimitadores `;`, `,`, `\t`, `|`).
 
-### 5. Variáveis Fenotípicas Configuráveis & Exportação Offline Segura
-* **Variáveis Extras (`VariavelExtra`):** Pré-carregadas (`Cor do Fruto`, `Nota de Vírus`, `Diâmetro do Tronco (cm)`) e expansíveis livremente com tipos **Numérico**, **Texto** ou **Lista de Opções** — todas adicionadas automaticamente como colunas extras na exportação.
-* **Persistência Atômica & CSV Padronizado:** Escrita local protegida contra corrupção via `AtomicFile` (`registros_breedai_local.json`, `formulario_breedai.json`, `variaveis_extras_breedai.json`) e exportação CSV RFC 4180 com **UTF-8 BOM** diretamente para `Download/BreedAI` via `MediaStore` + compartilhamento rápido via `FileProvider`.
+### 5. Pipeline Geométrico & Auditoria Pós-Foto (`TelaRevisaoCaptura`)
+* **Letterbox Isomórfico + Snap Geométrico:** Mantém a proporção original do objeto na entrada do modelo e re-executa inferência estática pós-captura com fusão inteligente (`fundirDeteccoesComSnapping`), eliminando desalinhamentos entre o preview e o disparo.
+* **Auditoria por Toque (*Human-in-the-Loop*):** Permite reclassificar objetos por toque, adicionar manualmente, ajustar dimensões (`−` / `+`) e excluir caixas sem que a re-detecção as recrie (*anti-ressurreição*).
+
+### 6. Prontidão Google Play & Privacidade Offline
+* Regras ProGuard/R8 configuradas em [`app/proguard-rules.pro`](app/proguard-rules.pro) para builds release com TensorFlow Lite, CameraX e classes de domínio.
+* Diálogo informativo transparente confirmando **processamento 100% local no aparelho**, sem envio de fotos para servidores externos.
 
 ---
 
@@ -104,18 +137,18 @@ Sem menus hambúrguer ocultos: a barra inferior dá acesso direto em 1 toque aos
 
 ```text
 app/src/main/java/com/example/myapplication/
-├── MainActivity.kt                              # Shell principal (BreedAIApp), NavigationBar, Modo Rota e Coleta Livre
+├── MainActivity.kt                              # BreedAITheme, Drawer, TopAppBar, NavigationBar, Rota e Coleta Livre
 ├── data/
 │   ├── ModelConfig.kt                           # Catálogo de modelos embutidos, manifesto .zip e labels
 │   ├── PontoFormulario.kt                       # Entidade de linha da planilha de campo
 │   └── RegistroColeta.kt                        # Entidades RegistroColeta, SituacaoPlanta e VariavelExtra
 └── userinterface/
-    ├── ComponentesFieldBook.kt                  # Câmera fullscreen, seletor de situação e variáveis extras
-    ├── TelaConfiguracaoModelo.kt                # Seleção de modelos, importação permanente e exportação .zip
-    ├── TelaEdicaoDados.kt                       # Filtros por situação, revisão, edição e exportação CSV
+    ├── ComponentesFieldBook.kt                  # Câmera fullscreen, Estado Fenotípico e Variáveis (Traits)
+    ├── TelaConfiguracaoModelo.kt                # Seleção de modelos, modo combinado, importação e exportação .zip
+    ├── TelaEdicaoDados.kt                       # Resumo do ensaio, filtros, revisão e exportação CSV
     ├── TelaRevisaoCaptura.kt                    # Auditoria geométrica pós-foto (snap, toque, resize e reclassificação)
     └── util/
-        ├── ObjectDetectorHelper.kt              # Engine TFLite (Letterbox, YOLO decoding, NMS e refinamento fitossanitário)
+        ├── ObjectDetectorHelper.kt              # Engine universal TFLite (Letterbox, YOLO/End2End/INT8, NMS multi-classe)
         ├── ImportadorPlanilhaUniversal.kt       # Parser offline nativo para .xlsx (ZIP+SAX) e .csv/.tsv
         ├── PersistenciaLocalRegistros.kt        # Armazenamento atômico JSON e SharedPreferences
         ├── FileUtils.kt                         # Exportação CSV dinâmica UTF-8 BOM + FileProvider
@@ -129,21 +162,15 @@ app/src/main/java/com/example/myapplication/
 | Camada | Tecnologias |
 | :--- | :--- |
 | **Linguagem & SDK** | Kotlin `2.0.21`, Android SDK (`minSdk 24`, `targetSdk 36`, AGP `9.0.0`, Gradle `9.1.0`) |
-| **UI & Navegação** | Jetpack Compose, Material Design 3, NavigationBar, Material Icons Extended, Coil `2.6.0` |
-| **Câmera & Visão Computacional** | CameraX `1.5.3`, TensorFlow Lite `2.16.1` (+ GPU Delegate), YOLOv8 Float32 (`640x640`) |
+| **UI & Navegação** | Jetpack Compose, Material Design 3 (`BreedAITheme`), `ModalNavigationDrawer`, `NavigationBar`, Coil `2.6.0` |
+| **Câmera & Visão Computacional** | CameraX `1.5.3`, TensorFlow Lite `2.16.1` (+ GPU Delegate), YOLO Universal (`FLOAT32` / `UINT8` / `INT8`) |
 | **Planilhas & Persistência** | `SAXParserFactory` + `ZipInputStream` (`.xlsx`), `AtomicFile`, JSON nativo Android |
 | **Hardware & Localização** | Google Play Services Location `21.2.0` (`FusedLocationProviderClient`), EXIF orientation |
-| **Qualidade & CI** | JUnit 4, Mockito `5.11.0`, `org.json`, GitHub Actions CI |
+| **Qualidade & Release** | JUnit 4 (**31 testes unitários**), Mockito `5.11.0`, ProGuard/R8 rules, GitHub Actions CI |
 
 ---
 
 ## 🏗️ Como Compilar, Testar e Instalar
-
-### Pré-requisitos
-* Android Studio (JDK 17+ / JDK 21) e Android SDK (`compileSdk 36`).
-* Aparelho Android físico ou emulador com depuração USB ativada.
-
-### Clonar e Rodar Testes + Build Debug
 
 ```bash
 git clone https://github.com/Igor8818/BreedAI.git
@@ -161,7 +188,7 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 
 ---
 
-## 🧪 Suíte de Testes Automatizados (**27 Testes Unitários**)
+## 🧪 Suíte de Testes Automatizados (**31 Testes Unitários**)
 
 Todos os testes executam na JVM via `./gradlew testDebugUnitTest` sem necessidade de emulador:
 
@@ -169,8 +196,8 @@ Todos os testes executam na JVM via `./gradlew testDebugUnitTest` sem necessidad
 | :--- | :---: | :--- |
 | `CsvParsingUnitTest` | 4 | Parser nativo `.xlsx` (ZIP+SAX), CSV UTF-8 BOM / Windows-1252 e auto-detecção de delimitadores |
 | `LetterboxAndGeometryUnitTest` | 9 | Letterbox isomórfico, projeção inversa, IoU, snapping geométrico e redimensionamento de caixas |
-| `ModelAndStateUnitTest` | 7 | Manifesto `.zip`, `SituacaoPlanta`, `VariavelExtra`, integridade e `refinarClasseDoencaPorMorfologiaCor` |
-| `YoloDetectionAndScaleUnitTest` | 6 | Decodificação de tensores YOLO, mapeamento de classes e assinatura dos modelos embutidos `.tflite` |
+| `ModelAndStateUnitTest` | 8 | Ordem padrão multi-cultura, isolamento da heurística de cacau (`isModeloDoencaCacau`), manifesto `.zip` e estados agronômicos |
+| `YoloDetectionAndScaleUnitTest` | 9 | Decodificação YOLO / `End2End NMS [1,N,6]`, `nmsMultiClasse`, metadados Ultralytics e fusão de modelos |
 | `DomainConcordanceIntegrationTest` | 1 | Fluxo completo offline: coleta + variáveis extras + revisão -> JSON -> CSV dinâmico |
 
 ---

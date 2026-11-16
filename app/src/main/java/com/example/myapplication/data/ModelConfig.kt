@@ -18,14 +18,18 @@ data class ModelConfig(
     val modeloInternoPath: String? = null,
     val modeloExternoUri: Uri? = null,
     val modeloExternoNome: String = "",
-    val labelsFiltro: List<String> = LABELS_DOENCA_CACAU + listOf("cacau", "fruto"),
+    val labelsFiltro: List<String> = listOf("cacau", "fruto"),
     val threshold: Float = 0.30f,
-    val maxResultados: Int = 25
+    val maxResultados: Int = 25,
+    val usarModeloSecundario: Boolean = false,
+    val modeloSecundarioArquivo: String = "detector_doenca.tflite"
 ) {
     val nomeExibicao: String
         get() = when {
             !modeloInternoPath.isNullOrBlank() && modeloExternoNome.isNotBlank() -> modeloExternoNome
             modeloExternoUri != null && modeloExternoNome.isNotBlank() -> modeloExternoNome
+            usarModeloSecundario && (modeloSelecionado == null || modeloSelecionado.nomeArquivo == "detector_doenca.tflite" || modeloSelecionado.nomeArquivo == "detector.tflite") ->
+                "Contagem + Diagnóstico (2 IAs)"
             modeloSelecionado != null -> modeloSelecionado.nomeExibicao
             else -> "Modelo Padrão"
         }
@@ -35,6 +39,8 @@ data class ModelConfig(
             put("nomeExibicao", nomeExibicao)
             put("threshold", threshold.toDouble())
             put("maxResultados", maxResultados)
+            put("usarModeloSecundario", usarModeloSecundario)
+            put("modeloSecundarioArquivo", modeloSecundarioArquivo)
             put("labelsFiltro", JSONArray().apply {
                 labelsFiltro.forEach { put(it) }
             })
@@ -49,6 +55,10 @@ data class ModelConfig(
                 val nome = root.optString("nomeExibicao", "").trim()
                 val threshold = root.optDouble("threshold", 0.30).toFloat().coerceIn(0.05f, 0.99f)
                 val maxResultados = root.optInt("maxResultados", 25).coerceIn(1, 50)
+                val usarSecundario = root.optBoolean("usarModeloSecundario", false)
+                val modeloSec = root.optString("modeloSecundarioArquivo", "detector_doenca.tflite")
+                    .trim()
+                    .ifBlank { "detector_doenca.tflite" }
                 val arr = root.optJSONArray("labelsFiltro")
                 val labels = if (arr != null) {
                     (0 until arr.length()).mapNotNull { arr.optString(it)?.trim()?.takeIf { s -> s.isNotEmpty() } }
@@ -59,7 +69,9 @@ data class ModelConfig(
                     nomeExibicao = nome,
                     labelsFiltro = labels,
                     threshold = threshold,
-                    maxResultados = maxResultados
+                    maxResultados = maxResultados,
+                    usarModeloSecundario = usarSecundario,
+                    modeloSecundarioArquivo = modeloSec
                 )
             } catch (_: Exception) {
                 null
@@ -71,21 +83,23 @@ data class ModelConfig(
         val nomeExibicao: String,
         val labelsFiltro: List<String>,
         val threshold: Float,
-        val maxResultados: Int
+        val maxResultados: Int,
+        val usarModeloSecundario: Boolean = false,
+        val modeloSecundarioArquivo: String = "detector_doenca.tflite"
     )
 }
 
 val MODELOS_EMBUTIDOS = listOf(
     ModelEmbutido(
+        nomeArquivo = "detector.tflite",
+        nomeExibicao = "Cacau Contagem (Pré-carregado)",
+        descricao = "Modelo pré-carregado desenvolvido pela equipe para detecção e contagem geral de frutos",
+        labelsDefault = listOf("cacau", "fruto")
+    ),
+    ModelEmbutido(
         nomeArquivo = "detector_doenca.tflite",
         nomeExibicao = "Cacau Doenças (Pré-carregado)",
         descricao = "Modelo multi-classe para diagnóstico fitossanitário de cacau (Sadio, Podridão Parda, Monilíase e Vassoura de Bruxa)",
         labelsDefault = LABELS_DOENCA_CACAU
-    ),
-    ModelEmbutido(
-        nomeArquivo = "detector.tflite",
-        nomeExibicao = "Cacau Contagem (Pré-carregado)",
-        descricao = "Modelo pré-carregado desenvolvido pela equipe para detecção e contagem geral de frutos de cacau",
-        labelsDefault = listOf("cacau", "fruto")
     )
 )

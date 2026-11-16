@@ -314,6 +314,8 @@ object PersistenciaLocalRegistros {
     private const val KEY_THRESHOLD = "threshold"
     private const val KEY_MAX_RESULTADOS = "max_resultados"
     private const val KEY_LABELS = "labels_filtro"
+    private const val KEY_USAR_MODELO_SECUNDARIO = "usar_modelo_secundario"
+    private const val KEY_MODELO_SECUNDARIO_ARQUIVO = "modelo_secundario_arquivo"
 
     fun salvarConfiguracaoModelo(context: Context, config: ModelConfig) {
         try {
@@ -330,6 +332,8 @@ object PersistenciaLocalRegistros {
                 .putFloat(KEY_THRESHOLD, config.threshold)
                 .putInt(KEY_MAX_RESULTADOS, config.maxResultados)
                 .putString(KEY_LABELS, labelsJson)
+                .putBoolean(KEY_USAR_MODELO_SECUNDARIO, config.usarModeloSecundario)
+                .putString(KEY_MODELO_SECUNDARIO_ARQUIVO, config.modeloSecundarioArquivo)
                 .apply()
         } catch (e: Exception) {
             Log.e("PersistenciaLocal", "Erro ao salvar configuracao do modelo: ${e.message}")
@@ -347,7 +351,7 @@ object PersistenciaLocalRegistros {
             val externoNome = prefs.getString(KEY_EXTERNO_NOME, "") ?: ""
             val labelsJson = prefs.getString(KEY_LABELS, null)
 
-            val labelsPadrao = com.example.myapplication.data.LABELS_DOENCA_CACAU + listOf("cacau", "fruto")
+            val labelsPadrao = listOf("cacau", "fruto")
             val labels = if (!labelsJson.isNullOrBlank()) {
                 try {
                     val arr = JSONArray(labelsJson)
@@ -360,27 +364,22 @@ object PersistenciaLocalRegistros {
             }
 
             val usaCustom = !internoPath.isNullOrBlank() || !externoUriStr.isNullOrBlank()
-            val usarMigracaoPadrao = !usaCustom &&
-                modeloArquivo == "detector.tflite" &&
-                labels.map { it.lowercase() }.toSet() == setOf("cacau", "fruto")
-
             val modeloEmbutido = if (!usaCustom) {
-                if (usarMigracaoPadrao) {
-                    MODELOS_EMBUTIDOS.firstOrNull { it.nomeArquivo == "detector_doenca.tflite" }
-                        ?: MODELOS_EMBUTIDOS.firstOrNull()
-                } else {
-                    MODELOS_EMBUTIDOS.firstOrNull { it.nomeArquivo == modeloArquivo }
-                        ?: MODELOS_EMBUTIDOS.firstOrNull()
-                }
+                MODELOS_EMBUTIDOS.firstOrNull { it.nomeArquivo == modeloArquivo }
+                    ?: MODELOS_EMBUTIDOS.firstOrNull()
             } else {
                 null
             }
 
-            val labelsEfetivas = if (usarMigracaoPadrao) labelsPadrao else labels
+            val labelsEfetivas = labels
 
             val externoUri = if (internoPath.isNullOrBlank() && !externoUriStr.isNullOrBlank()) {
                 safeParseUri(externoUriStr)
             } else null
+            val usarModeloSecundario = prefs.getBoolean(KEY_USAR_MODELO_SECUNDARIO, false)
+            val modeloSecundarioArquivo = prefs.getString(KEY_MODELO_SECUNDARIO_ARQUIVO, "detector_doenca.tflite")
+                ?.takeIf { it.isNotBlank() }
+                ?: "detector_doenca.tflite"
 
             ModelConfig(
                 modeloSelecionado = modeloEmbutido,
@@ -389,7 +388,9 @@ object PersistenciaLocalRegistros {
                 modeloExternoNome = externoNome,
                 labelsFiltro = labelsEfetivas,
                 threshold = threshold,
-                maxResultados = maxResultados
+                maxResultados = maxResultados,
+                usarModeloSecundario = usarModeloSecundario,
+                modeloSecundarioArquivo = modeloSecundarioArquivo
             )
         } catch (e: Exception) {
             Log.e("PersistenciaLocal", "Erro ao carregar configuracao do modelo: ${e.message}")
@@ -405,7 +406,8 @@ object PersistenciaLocalRegistros {
         val labelParcela: String = "Parcela",
         val labelPlanta: String = "Planta",
         val tipoNumParcela: Boolean = true,
-        val tipoNumPlanta: Boolean = true
+        val tipoNumPlanta: Boolean = true,
+        val autoAvancarPlanta: Boolean = true
     )
 
     fun salvarConfigColeta(context: Context, cfg: ConfigColetaLocal) {
@@ -417,6 +419,7 @@ object PersistenciaLocalRegistros {
                 .putString("label_planta", cfg.labelPlanta)
                 .putBoolean("num_parcela", cfg.tipoNumParcela)
                 .putBoolean("num_planta", cfg.tipoNumPlanta)
+                .putBoolean("auto_avancar_planta", cfg.autoAvancarPlanta)
                 .apply()
         } catch (_: Exception) {}
     }
@@ -430,7 +433,8 @@ object PersistenciaLocalRegistros {
                 labelParcela = prefs.getString("label_parcela", "Parcela") ?: "Parcela",
                 labelPlanta = prefs.getString("label_planta", "Planta") ?: "Planta",
                 tipoNumParcela = prefs.getBoolean("num_parcela", true),
-                tipoNumPlanta = prefs.getBoolean("num_planta", true)
+                tipoNumPlanta = prefs.getBoolean("num_planta", true),
+                autoAvancarPlanta = prefs.getBoolean("auto_avancar_planta", true)
             )
         } catch (_: Exception) {
             ConfigColetaLocal()

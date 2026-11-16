@@ -21,6 +21,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -29,6 +31,7 @@ import com.example.myapplication.data.SituacaoPlanta
 import com.example.myapplication.data.VariavelExtra
 import com.example.myapplication.userinterface.util.compartilharArquivoViaAndroid
 import com.example.myapplication.userinterface.util.exportarCSVBreedAI
+import java.util.Locale
 
 @Composable
 fun TelaEdicaoDados(
@@ -157,102 +160,126 @@ fun TelaEdicaoDados(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Cabeçalho de resumo + exportação local
-        Row(
+        val totalContado = registros.sumOf { it.totalObjetos }
+        val mediaPorPlanta = if (registros.isNotEmpty()) {
+            String.format(Locale.US, "%.1f", totalContado.toDouble() / registros.size)
+        } else {
+            "0.0"
+        }
+
+        // Card Superior de Resumo do Ensaio + Exportação CSV
+        Card(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, Color(0xFFDCE7DC))
         ) {
-            Column(Modifier.weight(1f)) {
-                Text("Edição dos Dados • $coletaNome", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color(0xFF1B5E20))
-                Text("${registros.size} registros salvos localmente no aparelho", fontSize = 12.sp, color = Color.Gray)
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    IndicadorResumoEnsaio(titulo = "Plantas", valor = "${registros.size}", modifier = Modifier.weight(1f))
+                    IndicadorResumoEnsaio(titulo = "Total Contado", valor = "$totalContado", modifier = Modifier.weight(1f))
+                    IndicadorResumoEnsaio(titulo = "Média", valor = mediaPorPlanta, modifier = Modifier.weight(1f))
+                }
+
+                HorizontalDivider(color = Color(0xFFEEF3EE))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            if (registros.isEmpty()) {
+                                Toast.makeText(context, "Nenhum registro para exportar.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                exportarCSVBreedAI(
+                                    context = context,
+                                    registros = registros,
+                                    coletaNome = coletaNome,
+                                    labelTratamento = labelTratamento,
+                                    labelParcela = labelParcela,
+                                    labelPlanta = labelPlanta,
+                                    variaveisAtivas = variaveisAtivas
+                                )
+                            }
+                        },
+                        enabled = registros.isNotEmpty(),
+                        modifier = Modifier.weight(1f).height(44.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = verde),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Icon(Icons.Default.FileDownload, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("BAIXAR CSV", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val csvFile = exportarCSVBreedAI(
+                                context = context,
+                                registros = registros,
+                                coletaNome = coletaNome,
+                                labelTratamento = labelTratamento,
+                                labelParcela = labelParcela,
+                                labelPlanta = labelPlanta,
+                                variaveisAtivas = variaveisAtivas
+                            )
+                            if (csvFile != null) {
+                                compartilharArquivoViaAndroid(
+                                    context = context,
+                                    arquivo = csvFile,
+                                    mimeType = "text/csv",
+                                    tituloChooser = "Compartilhar Planilha CSV ($coletaNome)"
+                                )
+                            }
+                        },
+                        enabled = registros.isNotEmpty(),
+                        modifier = Modifier.weight(1f).height(44.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = verde),
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("COMPARTILHAR CSV", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                    }
+                }
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = {
-                    if (registros.isEmpty()) {
-                        Toast.makeText(context, "Nenhum registro para exportar.", Toast.LENGTH_SHORT).show()
-                    } else {
-                        exportarCSVBreedAI(
-                            context = context,
-                            registros = registros,
-                            coletaNome = coletaNome,
-                            labelTratamento = labelTratamento,
-                            labelParcela = labelParcela,
-                            labelPlanta = labelPlanta,
-                            variaveisAtivas = variaveisAtivas
-                        )
-                    }
-                },
-                enabled = registros.isNotEmpty(),
-                modifier = Modifier.weight(1f).height(46.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = verde),
-                shape = RoundedCornerShape(10.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp)
-            ) {
-                Icon(Icons.Default.FileDownload, null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("EXPORTAR CSV", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-            }
-
-            OutlinedButton(
-                onClick = {
-                    val csvFile = exportarCSVBreedAI(
-                        context = context,
-                        registros = registros,
-                        coletaNome = coletaNome,
-                        labelTratamento = labelTratamento,
-                        labelParcela = labelParcela,
-                        labelPlanta = labelPlanta,
-                        variaveisAtivas = variaveisAtivas
-                    )
-                    if (csvFile != null) {
-                        compartilharArquivoViaAndroid(
-                            context = context,
-                            arquivo = csvFile,
-                            mimeType = "text/csv",
-                            tituloChooser = "Compartilhar Planilha CSV ($coletaNome)"
-                        )
-                    }
-                },
-                enabled = registros.isNotEmpty(),
-                modifier = Modifier.weight(1f).height(46.dp),
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = verde),
-                contentPadding = PaddingValues(horizontal = 8.dp)
-            ) {
-                Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("COMPARTILHAR CSV", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-            }
-        }
-
-        // Filtros rápidos
+        // Filtros rápidos com rótulos curtos sem cortar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             FilterChip(
                 selected = filtroSituacao == null,
                 onClick = { filtroSituacao = null },
-                label = { Text("Todas (${registros.size})", fontSize = 12.sp) }
+                label = { Text("Todas (${registros.size})", fontSize = 11.sp, maxLines = 1) }
             )
             SituacaoPlanta.entries.forEach { sit ->
                 val qtd = registros.count { it.situacaoPlanta == sit }
+                val rotuloFiltro = when (sit) {
+                    SituacaoPlanta.NORMAL -> "Normal"
+                    SituacaoPlanta.SEM_FRUTOS -> "S/ Frutos"
+                    SituacaoPlanta.NAO_AVALIAVEL -> "N. Aval."
+                }
                 FilterChip(
                     selected = filtroSituacao == sit,
                     onClick = { filtroSituacao = if (filtroSituacao == sit) null else sit },
-                    label = { Text("${sit.rotuloCurto} ($qtd)", fontSize = 12.sp) }
+                    label = { Text("$rotuloFiltro ($qtd)", fontSize = 11.sp, maxLines = 1) }
                 )
             }
         }
@@ -260,9 +287,10 @@ fun TelaEdicaoDados(
         if (registrosFiltrados.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    if (registros.isEmpty()) "Nenhum dado coletado nesta coleta ainda."
+                    if (registros.isEmpty()) "Nenhuma planta avaliada neste ensaio ainda."
                     else "Nenhum registro encontrado para este filtro.",
-                    color = Color.Gray
+                    color = Color.Gray,
+                    fontSize = 13.sp
                 )
             }
         } else {
@@ -273,7 +301,9 @@ fun TelaEdicaoDados(
                 items(registrosFiltrados, key = { "${it.idCompleto}_${it.data}" }) { reg ->
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        border = BorderStroke(1.dp, Color(0xFFE0E0E0))
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        border = BorderStroke(1.dp, Color(0xFFDCE7DC))
                     ) {
                         Row(
                             modifier = Modifier.padding(10.dp),
@@ -284,18 +314,18 @@ fun TelaEdicaoDados(
                                     model = reg.uri,
                                     contentDescription = reg.idCompleto,
                                     modifier = Modifier
-                                        .size(62.dp)
-                                        .clip(RoundedCornerShape(8.dp)),
+                                        .size(56.dp)
+                                        .clip(RoundedCornerShape(10.dp)),
                                     contentScale = ContentScale.Crop
                                 )
                             } else {
                                 Surface(
-                                    modifier = Modifier.size(62.dp),
-                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.size(56.dp),
+                                    shape = RoundedCornerShape(10.dp),
                                     color = Color(0xFFFFEBEE)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
-                                        Icon(Icons.Default.ReportProblem, null, tint = Color(0xFFC62828), modifier = Modifier.size(30.dp))
+                                        Icon(Icons.Default.ReportProblem, null, tint = Color(0xFFC62828), modifier = Modifier.size(28.dp))
                                     }
                                 }
                             }
@@ -307,19 +337,31 @@ fun TelaEdicaoDados(
                                 verticalArrangement = Arrangement.spacedBy(2.dp)
                             ) {
                                 Text(
-                                    "${reg.tratamento} • $labelParcela ${reg.parcela} • $labelPlanta ${reg.planta}",
+                                    "$labelParcela ${reg.parcela} • $labelPlanta ${reg.planta}",
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF1B5E20),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    "$labelTratamento: ${reg.tratamento}",
+                                    fontSize = 12.sp,
+                                    color = Color.DarkGray,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 val resumoSituacao = when (reg.situacaoPlanta) {
-                                    SituacaoPlanta.NORMAL -> "Normal • ${reg.totalObjetos} objetos contados"
-                                    SituacaoPlanta.SEM_FRUTOS -> "Sem Frutos (0 + Foto comprovação)"
-                                    SituacaoPlanta.NAO_AVALIAVEL -> "Não avaliável (${reg.motivoNaoAvaliavel})"
+                                    SituacaoPlanta.NORMAL -> "✓ ${reg.totalObjetos} frutos/objetos"
+                                    SituacaoPlanta.SEM_FRUTOS -> "Sem frutos (0)"
+                                    SituacaoPlanta.NAO_AVALIAVEL -> "Não aval.: ${reg.motivoNaoAvaliavel}"
                                 }
                                 Text(
                                     resumoSituacao,
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     color = when (reg.situacaoPlanta) {
                                         SituacaoPlanta.NORMAL -> verde
                                         SituacaoPlanta.SEM_FRUTOS -> Color(0xFFE65100)
@@ -331,36 +373,37 @@ fun TelaEdicaoDados(
                                         .filter { it.value.isNotBlank() }
                                         .joinToString(" • ") { "${it.key}: ${it.value}" }
                                     if (extrasResumo.isNotBlank()) {
-                                        Text(extrasResumo, fontSize = 11.sp, color = Color.DarkGray)
+                                        Text(
+                                            extrasResumo,
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF5F6F61),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }
 
-                            Column(
-                                horizontalAlignment = Alignment.End,
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                Row {
-                                    if (reg.uri != Uri.EMPTY && reg.situacaoPlanta == SituacaoPlanta.NORMAL) {
-                                        IconButton(
-                                            onClick = { onEditarCaixas(reg) },
-                                            modifier = Modifier.size(34.dp)
-                                        ) {
-                                            Icon(Icons.Default.CropFree, "Revisar caixas na foto", tint = verde, modifier = Modifier.size(19.dp))
-                                        }
-                                    }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (reg.uri != Uri.EMPTY && reg.situacaoPlanta == SituacaoPlanta.NORMAL) {
                                     IconButton(
-                                        onClick = { registroParaEditarDados = reg },
+                                        onClick = { onEditarCaixas(reg) },
                                         modifier = Modifier.size(34.dp)
                                     ) {
-                                        Icon(Icons.Default.Edit, "Editar situação/variáveis", tint = Color(0xFF1565C0), modifier = Modifier.size(19.dp))
+                                        Icon(Icons.Default.CropFree, "Revisar caixas na foto", tint = verde, modifier = Modifier.size(19.dp))
                                     }
-                                    IconButton(
-                                        onClick = { registroParaExcluir = reg },
-                                        modifier = Modifier.size(34.dp)
-                                    ) {
-                                        Icon(Icons.Default.Delete, "Excluir registro", tint = Color(0xFFC62828), modifier = Modifier.size(19.dp))
-                                    }
+                                }
+                                IconButton(
+                                    onClick = { registroParaEditarDados = reg },
+                                    modifier = Modifier.size(34.dp)
+                                ) {
+                                    Icon(Icons.Default.Edit, "Editar situação/variáveis", tint = Color(0xFF1565C0), modifier = Modifier.size(19.dp))
+                                }
+                                IconButton(
+                                    onClick = { registroParaExcluir = reg },
+                                    modifier = Modifier.size(34.dp)
+                                ) {
+                                    Icon(Icons.Default.Delete, "Excluir registro", tint = Color(0xFFC62828), modifier = Modifier.size(19.dp))
                                 }
                             }
                         }
@@ -368,5 +411,31 @@ fun TelaEdicaoDados(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun IndicadorResumoEnsaio(
+    titulo: String,
+    valor: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            valor,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = Color(0xFF1B5E20),
+            textAlign = TextAlign.Center
+        )
+        Text(
+            titulo,
+            fontSize = 11.sp,
+            color = Color(0xFF5F6F61),
+            textAlign = TextAlign.Center
+        )
     }
 }

@@ -4,8 +4,10 @@ import android.content.Context
 import android.net.Uri
 import androidx.camera.core.ImageCapture
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -51,7 +53,7 @@ fun criarDetectorHelperBreedAI(
             )
         modelConfig.modeloSelecionado != null ->
             ObjectDetectorHelper.ModelSource.Asset(modelConfig.modeloSelecionado.nomeArquivo)
-        else -> ObjectDetectorHelper.ModelSource.Asset("detector_doenca.tflite")
+        else -> ObjectDetectorHelper.ModelSource.Asset("detector.tflite")
     }
     return ObjectDetectorHelper(
         context = context,
@@ -62,6 +64,46 @@ fun criarDetectorHelperBreedAI(
         defaultLabel = modelConfig.labelsFiltro.firstOrNull() ?: "objeto",
         customLabels = modelConfig.labelsFiltro
     )
+}
+
+fun criarParDetectoresBreedAI(
+    context: Context,
+    modelConfig: ModelConfig
+): Pair<ObjectDetectorHelper, ObjectDetectorHelper?> {
+    if (!modelConfig.usarModeloSecundario) {
+        return criarDetectorHelperBreedAI(context, modelConfig) to null
+    }
+
+    val usaDoencaEmbutidoComoPrincipal =
+        modelConfig.modeloInternoPath.isNullOrBlank() &&
+                modelConfig.modeloExternoUri == null &&
+                (modelConfig.modeloSelecionado == null || modelConfig.modeloSelecionado.nomeArquivo == "detector_doenca.tflite")
+
+    val primario = if (usaDoencaEmbutidoComoPrincipal) {
+        ObjectDetectorHelper(
+            context = context,
+            detectorListener = null,
+            modelSource = ObjectDetectorHelper.ModelSource.Asset("detector.tflite"),
+            scoreThreshold = modelConfig.threshold,
+            maxResults = modelConfig.maxResultados,
+            defaultLabel = "objeto",
+            customLabels = listOf("cacau", "fruto")
+        )
+    } else {
+        criarDetectorHelperBreedAI(context, modelConfig)
+    }
+
+    val secundario = ObjectDetectorHelper(
+        context = context,
+        detectorListener = null,
+        modelSource = ObjectDetectorHelper.ModelSource.Asset(modelConfig.modeloSecundarioArquivo),
+        scoreThreshold = modelConfig.threshold,
+        maxResults = modelConfig.maxResultados,
+        defaultLabel = com.example.myapplication.data.LABELS_DOENCA_CACAU.firstOrNull() ?: "objeto",
+        customLabels = com.example.myapplication.data.LABELS_DOENCA_CACAU
+    )
+
+    return primario to secundario
 }
 
 @Composable
@@ -104,12 +146,15 @@ fun CameraFullscreenBreedAI(
         val listaFiltrada = if (modoSemFrutos) {
             emptyList()
         } else {
+            val labelsModelo = detectorHelper.obterLabelsModelo()
             deteccoesAtuais.filter { det ->
                 val label = det.categories.firstOrNull()?.label?.lowercase(Locale.ROOT) ?: ""
                 val score = det.categories.firstOrNull()?.score ?: 0f
                 score >= modelConfig.threshold &&
                         (modelConfig.labelsFiltro.isEmpty() ||
-                                modelConfig.labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) })
+                                modelConfig.labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) } ||
+                                labelsModelo.any { m -> label.equals(m.lowercase(Locale.ROOT), ignoreCase = true) } ||
+                                label in setOf("objeto", "cacau", "fruto"))
             }
         }
 
@@ -199,33 +244,26 @@ fun SeletorSituacaoPlantaCard(
     motivoNaoAvaliavel: String,
     onMotivoChange: (String) -> Unit
 ) {
-    Surface(
+    Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        color = Color(0xFFFAFAFA),
-        border = BorderStroke(1.dp, Color(0xFFE0E0E0))
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, Color(0xFFDCE7DC))
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Situação da Planta",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = Color(0xFF1B5E20)
-                )
-            }
+            Text(
+                "Estado Fenotípico da Planta",
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = Color(0xFF1B5E20)
+            )
 
-            // Segmented control em uma única linha compacta
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = Color(0xFFEEEEEE),
+                color = Color(0xFFEEF3EE),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -241,6 +279,11 @@ fun SeletorSituacaoPlantaCard(
                             SituacaoPlanta.SEM_FRUTOS -> Color(0xFFEF6C00)
                             SituacaoPlanta.NAO_AVALIAVEL -> Color(0xFFC62828)
                         }
+                        val rotuloExibido = when (opcao) {
+                            SituacaoPlanta.NORMAL -> "Normal"
+                            SituacaoPlanta.SEM_FRUTOS -> "Sem Frutos"
+                            SituacaoPlanta.NAO_AVALIAVEL -> "Não Avaliável"
+                        }
                         Surface(
                             onClick = { onSituacaoChange(opcao) },
                             modifier = Modifier
@@ -251,10 +294,10 @@ fun SeletorSituacaoPlantaCard(
                         ) {
                             Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 4.dp)) {
                                 Text(
-                                    opcao.rotulo,
+                                    rotuloExibido,
                                     fontSize = 12.sp,
                                     fontWeight = if (selecionada) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (selecionada) Color.White else Color.DarkGray,
+                                    color = if (selecionada) Color.White else Color(0xFF3E4E40),
                                     maxLines = 1
                                 )
                             }
@@ -266,12 +309,20 @@ fun SeletorSituacaoPlantaCard(
             when (situacao) {
                 SituacaoPlanta.NORMAL -> Unit
                 SituacaoPlanta.SEM_FRUTOS -> {
-                    Text(
-                        "Foto comprobatória obrigatória • salva contagem 0.",
-                        fontSize = 11.sp,
-                        color = Color(0xFFE65100),
-                        fontWeight = FontWeight.Medium
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFFFFF3E0),
+                        border = BorderStroke(1.dp, Color(0xFFFFCC80)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "Exige foto comprobatória • registra 0 frutos",
+                            fontSize = 11.sp,
+                            color = Color(0xFFE65100),
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
                 }
                 SituacaoPlanta.NAO_AVALIAVEL -> {
                     FlowRow(
@@ -297,8 +348,8 @@ fun SeletorSituacaoPlantaCard(
 }
 
 /**
- * Seção de Variáveis Extras inspirada no Field Book (Cor do Fruto, Nota de Vírus, Diâmetro, etc.).
- * Recolhida em botão compacto de 1 linha quando não há variáveis ativas.
+ * Seção de Variáveis Fenotípicas (Traits) inspirada no Field Book.
+ * Recolhida em cartão compacto clicável quando não há variáveis ativas.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -308,31 +359,60 @@ fun BlocoVariaveisExtrasCard(
     onAbrirConfigVariaveis: () -> Unit
 ) {
     if (variaveisAtivas.isEmpty()) {
-        OutlinedButton(
+        Card(
             onClick = onAbrirConfigVariaveis,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(42.dp),
-            shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(1.dp, Color(0xFFA5D6A7)),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF2E7D32)),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, Color(0xFFDCE7DC))
         ) {
-            Icon(Icons.Default.AddCircleOutline, null, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("+ Configurar Variáveis Extras (Opcional)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(Color(0xFFE8F5E9), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Tune, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(18.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Variáveis Fenotípicas (Traits)",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1B5E20)
+                    )
+                    Text(
+                        "Toque para ativar notas de vigor, maturação ou medidas",
+                        fontSize = 11.sp,
+                        color = Color(0xFF5F6F61)
+                    )
+                }
+                Text(
+                    "Configurar",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = VERDE_PRINCIPAL
+                )
+            }
         }
         return
     }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F9F5)),
-        border = BorderStroke(1.dp, Color(0xFFC8E6C9))
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, Color(0xFFDCE7DC))
     ) {
         Column(
-            modifier = Modifier.padding(10.dp),
+            modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
@@ -341,10 +421,10 @@ fun BlocoVariaveisExtrasCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.ListAlt, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Tune, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "Variáveis (${variaveisAtivas.size})",
+                        "Variáveis Fenotípicas (${variaveisAtivas.size})",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         color = Color(0xFF1B5E20)
@@ -363,9 +443,7 @@ fun BlocoVariaveisExtrasCard(
                         onClick = onAbrirConfigVariaveis,
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                     ) {
-                        Icon(Icons.Default.AddCircleOutline, null, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Configurar", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text("Editar Traits", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = VERDE_PRINCIPAL)
                     }
                 }
             }
@@ -419,6 +497,117 @@ fun BlocoVariaveisExtrasCard(
     }
 
 @Composable
+fun ConteudoGerenciarVariaveisExtras(
+    variaveis: List<VariavelExtra>,
+    onToggleAtiva: (VariavelExtra, Boolean) -> Unit,
+    onAdicionarVariavel: (nome: String, tipo: TipoVariavelExtra, opcoes: List<String>) -> Unit,
+    onRemoverVariavel: (VariavelExtra) -> Unit
+) {
+    var novoNome by remember { mutableStateOf("") }
+    var novoTipo by remember { mutableStateOf(TipoVariavelExtra.LISTA_OPCOES) }
+    var novasOpcoesTxt by remember { mutableStateOf("") }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            "Ative ou crie variáveis extras personalizadas para esta coleta (estilo Field Book):",
+            fontSize = 12.sp,
+            color = Color.Gray
+        )
+
+        variaveis.forEach { v ->
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = if (v.ativa) Color(0xFFE8F5E9) else Color(0xFFF5F5F5)
+                ),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(v.nome, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        val detalhe = if (v.tipo == TipoVariavelExtra.LISTA_OPCOES && v.opcoes.isNotEmpty()) {
+                            "${v.tipo.rotulo}: ${v.opcoes.joinToString(", ")}"
+                        } else {
+                            v.tipo.rotulo
+                        }
+                        Text(detalhe, fontSize = 11.sp, color = Color.Gray)
+                    }
+                    Switch(
+                        checked = v.ativa,
+                        onCheckedChange = { onToggleAtiva(v, it) }
+                    )
+                    IconButton(
+                        onClick = { onRemoverVariavel(v) },
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(Icons.Default.DeleteOutline, "Excluir variável", tint = Color(0xFFC62828), modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider()
+        Text("Criar Nova Variável", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF1B5E20))
+
+        OutlinedTextField(
+            value = novoNome,
+            onValueChange = { novoNome = it },
+            label = { Text("Nome da Variável") },
+            placeholder = { Text("Ex: Altura (m), Severidade, Vigor") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            TipoVariavelExtra.entries.forEach { t ->
+                FilterChip(
+                    selected = novoTipo == t,
+                    onClick = { novoTipo = t },
+                    label = { Text(t.rotulo, fontSize = 11.sp) }
+                )
+            }
+        }
+
+        if (novoTipo == TipoVariavelExtra.LISTA_OPCOES) {
+            OutlinedTextField(
+                value = novasOpcoesTxt,
+                onValueChange = { novasOpcoesTxt = it },
+                label = { Text("Opções (separadas por vírgula)") },
+                placeholder = { Text("Ex: Baixo, Médio, Alto") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        Button(
+            onClick = {
+                val nomeLimpo = novoNome.trim()
+                if (nomeLimpo.isNotBlank()) {
+                    val ops = if (novoTipo == TipoVariavelExtra.LISTA_OPCOES) {
+                        novasOpcoesTxt.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    } else emptyList()
+                    onAdicionarVariavel(nomeLimpo, novoTipo, ops)
+                    novoNome = ""
+                    novasOpcoesTxt = ""
+                }
+            },
+            enabled = novoNome.isNotBlank() &&
+                    (novoTipo != TipoVariavelExtra.LISTA_OPCOES || novasOpcoesTxt.isNotBlank()),
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = VERDE_PRINCIPAL)
+        ) {
+            Icon(Icons.Default.Add, null)
+            Spacer(Modifier.width(6.dp))
+            Text("ADICIONAR VARIÁVEL")
+        }
+    }
+}
+
+@Composable
 fun DialogGerenciarVariaveisExtras(
     variaveis: List<VariavelExtra>,
     onToggleAtiva: (VariavelExtra, Boolean) -> Unit,
@@ -426,10 +615,6 @@ fun DialogGerenciarVariaveisExtras(
     onRemoverVariavel: (VariavelExtra) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var novoNome by remember { mutableStateOf("") }
-    var novoTipo by remember { mutableStateOf(TipoVariavelExtra.LISTA_OPCOES) }
-    var novasOpcoesTxt by remember { mutableStateOf("") }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Variáveis Extras da Coleta", fontWeight = FontWeight.Bold, fontSize = 18.sp) },
@@ -438,105 +623,14 @@ fun DialogGerenciarVariaveisExtras(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 430.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
-                Text(
-                    "Ative ou desative variáveis pré-cadastradas para esta coleta (estilo Field Book):",
-                    fontSize = 12.sp,
-                    color = Color.Gray
+                ConteudoGerenciarVariaveisExtras(
+                    variaveis = variaveis,
+                    onToggleAtiva = onToggleAtiva,
+                    onAdicionarVariavel = onAdicionarVariavel,
+                    onRemoverVariavel = onRemoverVariavel
                 )
-
-                variaveis.forEach { v ->
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (v.ativa) Color(0xFFE8F5E9) else Color(0xFFF5F5F5)
-                        ),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(v.nome, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                val detalhe = if (v.tipo == TipoVariavelExtra.LISTA_OPCOES && v.opcoes.isNotEmpty()) {
-                                    "${v.tipo.rotulo}: ${v.opcoes.joinToString(", ")}"
-                                } else {
-                                    v.tipo.rotulo
-                                }
-                                Text(detalhe, fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = v.ativa,
-                                onCheckedChange = { onToggleAtiva(v, it) }
-                            )
-                            IconButton(
-                                onClick = { onRemoverVariavel(v) },
-                                modifier = Modifier.size(30.dp)
-                            ) {
-                                Icon(Icons.Default.DeleteOutline, "Excluir variável", tint = Color(0xFFC62828), modifier = Modifier.size(18.dp))
-                            }
-                        }
-                    }
-                }
-
-                HorizontalDivider()
-                Text("Criar Nova Variável", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF1B5E20))
-
-                OutlinedTextField(
-                    value = novoNome,
-                    onValueChange = { novoNome = it },
-                    label = { Text("Nome da Variável") },
-                    placeholder = { Text("Ex: Altura (m), Severidade, Vigor") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TipoVariavelExtra.entries.forEach { t ->
-                        FilterChip(
-                            selected = novoTipo == t,
-                            onClick = { novoTipo = t },
-                            label = { Text(t.rotulo, fontSize = 11.sp) }
-                        )
-                    }
-                }
-
-                if (novoTipo == TipoVariavelExtra.LISTA_OPCOES) {
-                    OutlinedTextField(
-                        value = novasOpcoesTxt,
-                        onValueChange = { novasOpcoesTxt = it },
-                        label = { Text("Opções (separadas por vírgula)") },
-                        placeholder = { Text("Ex: Baixo, Médio, Alto") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                Button(
-                    onClick = {
-                        val nomeLimpo = novoNome.trim()
-                        if (nomeLimpo.isNotBlank()) {
-                            val ops = if (novoTipo == TipoVariavelExtra.LISTA_OPCOES) {
-                                novasOpcoesTxt.split(",").map { it.trim() }.filter { it.isNotBlank() }
-                            } else emptyList()
-                            onAdicionarVariavel(nomeLimpo, novoTipo, ops)
-                            novoNome = ""
-                            novasOpcoesTxt = ""
-                        }
-                    },
-                    enabled = novoNome.isNotBlank() &&
-                            (novoTipo != TipoVariavelExtra.LISTA_OPCOES || novasOpcoesTxt.isNotBlank()),
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = VERDE_PRINCIPAL)
-                ) {
-                    Icon(Icons.Default.Add, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("ADICIONAR VARIÁVEL")
-                }
             }
         },
         confirmButton = {
