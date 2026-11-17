@@ -3,12 +3,15 @@ package com.example.myapplication.userinterface.util
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Size
 import androidx.camera.core.*
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
@@ -32,17 +35,6 @@ import java.util.concurrent.atomic.AtomicLong
 // Executor dedicado — inferência nunca roda na main thread
 private val inferenceExecutor = Executors.newSingleThreadExecutor()
 
-/**
- * Rotaciona o bitmap pelos graus indicados (normalmente vindos de
- * imageInfo.rotationDegrees). Se degrees == 0, devolve o próprio bitmap
- * sem custo extra.
- */
-private fun Bitmap.rotatedBy(degrees: Int): Bitmap {
-    if (degrees == 0) return this
-    val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
-    return Bitmap.createBitmap(this, 0, 0, width, height, matrix, true)
-}
-
 @Composable
 fun CameraWithAI(
     helper: ObjectDetectorHelper,
@@ -54,14 +46,22 @@ fun CameraWithAI(
     val providerFuture = remember { ProcessCameraProvider.getInstance(context) }
     val mainExecutor = remember { ContextCompat.getMainExecutor(context) }
     val disposed = remember { AtomicBoolean(false) }
+    val inferenceRunning = remember { AtomicBoolean(false) }
+    val lastFinishedMs = remember { AtomicLong(0L) }
 
     // Registra listener thread-safe direcionado à MainLooper e desvincula a câmera ao sair da tela
     DisposableEffect(helper, lifecycleOwner) {
         disposed.set(false)
+        inferenceRunning.set(false)
+        lastFinishedMs.set(0L)
         helper.setListener(object : ObjectDetectorHelper.DetectorListener {
             override fun onResults(resultado: ObjectDetectorHelper.ResultadoDeteccao) {
-                mainExecutor.execute {
-                    onResultsUpdated(resultado)
+                if (!disposed.get()) {
+                    mainExecutor.execute {
+                        if (!disposed.get()) {
+                            onResultsUpdated(resultado)
+                        }
+                    }
                 }
             }
             override fun onError(mensagem: String) {
@@ -83,65 +83,68 @@ fun CameraWithAI(
         val view = PreviewView(ctx).apply {
             // Garante que o preview use FILL_CENTER mantendo proporção da imagem
             scaleType = PreviewView.ScaleType.FILL_CENTER
+            implementationMode = PreviewView.ImplementationMode.PERFORMANCE
         }
 
-        // Throttle para manter fluidez e resposta em tempo real
-        val inferenceRunning = AtomicBoolean(false)
-        val lastInferenceMs = AtomicLong(0L)
-        val minIntervalMs = 150L // Inferência rápida e fluida (~6 a 7 FPS)
+        val minCooldownMs = 140L
 
         providerFuture.addListener({
             if (disposed.get()) return@addListener
             val provider = providerFuture.get()
 
-            // Força Preview e Análise a usarem a mesma proporção 4:3 para evitar distorção ou FOV diferente
+            val previewResSelector = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                .build()
+
+            val analysisResSelector = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(
+                    ResolutionStrategy(
+                        Size(640, 480),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
+                    )
+                )
+                .build()
+
             val preview = Preview.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .setResolutionSelector(previewResSelector)
                 .build()
                 .also { it.setSurfaceProvider(view.surfaceProvider) }
 
             val analyzer = ImageAnalysis.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .setResolutionSelector(analysisResSelector)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build().also { analysis ->
                     analysis.setAnalyzer(inferenceExecutor) { proxy ->
                         val now = System.currentTimeMillis()
-
-                        // Pula frame se inferência ainda está rodando ou se intervalo mínimo não passou
-                        if (inferenceRunning.get() || (now - lastInferenceMs.get()) < minIntervalMs) {
+                        if (disposed.get() || inferenceRunning.get() || (now - lastFinishedMs.get()) < minCooldownMs) {
                             proxy.close()
                             return@setAnalyzer
                         }
 
                         inferenceRunning.set(true)
-                        lastInferenceMs.set(now)
-
                         var rawBitmap: Bitmap? = null
-                        var processedBitmap: Bitmap? = null
+                        val tStart = System.currentTimeMillis()
                         try {
                             val rotation = proxy.imageInfo.rotationDegrees
                             rawBitmap = proxy.toBitmap()
-                            proxy.close() // Libera buffer imediatamente
+                            proxy.close() // Libera buffer nativo da câmera imediatamente
 
-                            processedBitmap = if (rotation != 0) {
-                                rawBitmap.rotatedBy(rotation)
-                            } else {
-                                rawBitmap
+                            if (!disposed.get()) {
+                                // Rotaciona e aplica Letterbox em 1 único passo na matriz (zero bitmap temporário)
+                                helper.detect(rawBitmap, rotation)
                             }
-
-                            helper.detect(processedBitmap)
-
                         } catch (e: Exception) {
                             Log.e("CameraAI", "Erro no frame: ${e.message}")
                             try { proxy.close() } catch (_: Exception) {}
                         } finally {
-                            // Libera buffers nativos de imagem para mitigar GC churn e manter o preview a 60 FPS
-                            if (processedBitmap != null && processedBitmap != rawBitmap && !processedBitmap.isRecycled) {
-                                processedBitmap.recycle()
-                            }
                             if (rawBitmap != null && !rawBitmap.isRecycled) {
                                 rawBitmap.recycle()
                             }
+                            val elapsed = System.currentTimeMillis() - tStart
+                            val adaptiveGap = (elapsed / 3L).coerceIn(0L, 120L)
+                            lastFinishedMs.set(System.currentTimeMillis() + adaptiveGap)
                             inferenceRunning.set(false)
                         }
                     }

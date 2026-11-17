@@ -34,6 +34,13 @@ data class ModelConfig(
             else -> "Modelo Padrão"
         }
 
+    fun chaveModeloPersistente(): String = when {
+        !modeloInternoPath.isNullOrBlank() -> "custom_" + modeloInternoPath.substringAfterLast('/').substringAfterLast('\\')
+        modeloExternoUri != null -> "ext_" + modeloExternoNome.trim()
+        modeloSelecionado != null -> "builtin_" + modeloSelecionado.nomeExibicao
+        else -> "builtin_default"
+    }
+
     fun toManifestJson(): String {
         val root = JSONObject().apply {
             put("nomeExibicao", nomeExibicao)
@@ -92,14 +99,26 @@ data class ModelConfig(
 val MODELOS_EMBUTIDOS = listOf(
     ModelEmbutido(
         nomeArquivo = "detector.tflite",
-        nomeExibicao = "Cacau Contagem (Pré-carregado)",
-        descricao = "Modelo pré-carregado desenvolvido pela equipe para detecção e contagem geral de frutos",
+        nomeExibicao = "Contagem Geral (Pré-carregado)",
+        descricao = "Conta frutos de cacau rapidamente ao vivo na câmera.",
         labelsDefault = listOf("cacau", "fruto")
     ),
     ModelEmbutido(
         nomeArquivo = "detector_doenca.tflite",
         nomeExibicao = "Cacau Doenças (Pré-carregado)",
-        descricao = "Modelo multi-classe para diagnóstico fitossanitário de cacau (Sadio, Podridão Parda, Monilíase e Vassoura de Bruxa)",
+        descricao = "Conta frutos de cacau e separa automaticamente em Sadio, Podridão Parda, Monilíase e Vassoura de Bruxa.",
         labelsDefault = LABELS_DOENCA_CACAU
+    ),
+    ModelEmbutido(
+        nomeArquivo = "detector_frutas_coco.tflite",
+        nomeExibicao = "Detector de Banana (Exemplo)",
+        descricao = "Exemplo pronto focado apenas em Banana, simulando um modelo importado de outra cultura.",
+        labelsDefault = listOf("banana")
+    ),
+    ModelEmbutido(
+        nomeArquivo = "detector_frutas_coco.tflite",
+        nomeExibicao = "Detector de Maçã (Exemplo)",
+        descricao = "Exemplo pronto focado apenas em Maçã, demonstrando o app com outro fruto separado.",
+        labelsDefault = listOf("apple")
     )
 )

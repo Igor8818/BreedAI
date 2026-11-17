@@ -35,6 +35,7 @@ import com.example.myapplication.userinterface.util.compartilharArquivoViaAndroi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
@@ -42,10 +43,12 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TelaConfiguracaoModelo(
     configAtual: ModelConfig,
-    onSalvar: (ModelConfig) -> Unit
+    onSalvar: (ModelConfig) -> Unit,
+    onGerarVariaveisDoModelo: ((List<String>) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -61,10 +64,69 @@ fun TelaConfiguracaoModelo(
     var maxResultados by remember(configAtual) { mutableIntStateOf(configAtual.maxResultados) }
     var usarModeloSecundario by remember(configAtual) { mutableStateOf(configAtual.usarModeloSecundario) }
     var novoLabel by remember { mutableStateOf("") }
+    var buscaClasseModelo by remember { mutableStateOf("") }
+    var novaClassificacaoTexto by remember { mutableStateOf("") }
     var processandoArquivo by remember { mutableStateOf(false) }
+    var classesDisponiveisNoModelo by remember { mutableStateOf<List<String>>(emptyList()) }
+    var classificacoesPersonalizadas by remember { mutableStateOf<List<String>>(emptyList()) }
+    var diagnosticoModelo by remember { mutableStateOf<ObjectDetectorHelper.ModelInspectionReport?>(null) }
+    var erroImportacaoDialog by remember { mutableStateOf<String?>(null) }
 
     val listaLabels = remember(labelsTexto) {
         labelsTexto.split(",").map { it.trim() }.filter { it.isNotBlank() }
+    }
+
+    val chaveModeloAtual = remember(modeloSelecionado, modeloInternoPath, modeloExternoUri, modeloExternoNome) {
+        ModelConfig(
+            modeloSelecionado = modeloSelecionado,
+            modeloInternoPath = modeloInternoPath,
+            modeloExternoUri = modeloExternoUri,
+            modeloExternoNome = modeloExternoNome.trim()
+        ).chaveModeloPersistente()
+    }
+
+    LaunchedEffect(modeloSelecionado, modeloInternoPath, chaveModeloAtual) {
+        withContext(Dispatchers.IO) {
+            val inspecao = when {
+                !modeloInternoPath.isNullOrBlank() -> {
+                    val f = File(modeloInternoPath!!)
+                    if (f.exists()) ObjectDetectorHelper.inspecionarModeloArquivo(f) else null
+                }
+                modeloSelecionado != null -> {
+                    ObjectDetectorHelper.extrairLabelsDeAsset(context, modeloSelecionado!!.nomeArquivo)
+                    val cached = File(context.cacheDir, modeloSelecionado!!.nomeArquivo)
+                    if (cached.exists()) ObjectDetectorHelper.inspecionarModeloArquivo(cached) else null
+                }
+                else -> null
+            }
+            val labelsValidas = (inspecao?.labelsExtraidas ?: emptyList())
+                .filter { it.isNotBlank() && it != "???" }
+            val salvasClassif = com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
+                .carregarClassificacoesModelo(context, chaveModeloAtual)
+            withContext(Dispatchers.Main) {
+                diagnosticoModelo = inspecao
+                classesDisponiveisNoModelo = labelsValidas
+                classificacoesPersonalizadas = salvasClassif ?: if (labelsValidas.size in 2..15) {
+                    labelsValidas
+                } else {
+                    modeloSelecionado?.labelsDefault ?: listaLabels
+                }
+            }
+        }
+    }
+
+    if (erroImportacaoDialog != null) {
+        AlertDialog(
+            onDismissRequest = { erroImportacaoDialog = null },
+            title = { Text("Modelo Não Compatível", fontWeight = FontWeight.Bold, color = Color(0xFFC62828)) },
+            text = { Text(erroImportacaoDialog!!, fontSize = 13.sp) },
+            confirmButton = {
+                Button(
+                    onClick = { erroImportacaoDialog = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = verde)
+                ) { Text("ENTENDI") }
+            }
+        )
     }
 
     val launcherModelo = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -74,37 +136,29 @@ fun TelaConfiguracaoModelo(
             val importado = importarArquivoModeloPermanente(context, uri)
             withContext(Dispatchers.Main) {
                 processandoArquivo = false
-                if (importado != null) {
+                if (importado.compativel && !importado.tflitePath.isNullOrBlank()) {
                     modeloSelecionado = null
                     modeloExternoUri = null
                     modeloInternoPath = importado.tflitePath
                     modeloExternoNome = importado.nomeExibicao
-                    val msgImport = if (importado.labels.isNotEmpty()) {
-                        labelsTexto = importado.labels.joinToString(", ")
-                        "Modelo \"${importado.nomeExibicao}\" importado com sucesso!"
-                    } else {
-                        "Modelo \"${importado.nomeExibicao}\" importado sem rótulos embutidos — ajuste os rótulos da IA abaixo."
+                    classesDisponiveisNoModelo = importado.labels.filter { it != "???" && it.isNotBlank() }
+                    diagnosticoModelo = importado.inspecao
+                    val labelsLimpas = classesDisponiveisNoModelo
+                    if (labelsLimpas.isNotEmpty()) {
+                        labelsTexto = labelsLimpas.take(12).joinToString(", ")
                     }
-                    importado.threshold?.let {
-                        thresholdTexto = (it * 100).toInt().toString()
-                    }
-                    importado.maxResultados?.let {
-                        maxResultados = it
-                    }
-                    importado.usarModeloSecundario?.let {
-                        usarModeloSecundario = it
-                    }
+                    importado.threshold?.let { thresholdTexto = (it * 100).toInt().toString() }
+                    importado.maxResultados?.let { maxResultados = it }
+                    importado.usarModeloSecundario?.let { usarModeloSecundario = it }
                     Toast.makeText(
                         context,
-                        msgImport,
-                        if (importado.labels.isNotEmpty()) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
-                    ).show()
-                } else {
-                    Toast.makeText(
-                        context,
-                        "Não foi possível importar o arquivo (.tflite ou pacote .zip).",
+                        importado.inspecao?.avisoUsuario ?: "Modelo \"${importado.nomeExibicao}\" importado!",
                         Toast.LENGTH_LONG
                     ).show()
+                } else {
+                    erroImportacaoDialog = importado.erroMensagem
+                        ?: importado.inspecao?.avisoUsuario
+                        ?: "Não foi possível validar o arquivo (.tflite ou pacote .zip)."
                 }
             }
         }
@@ -168,7 +222,13 @@ fun TelaConfiguracaoModelo(
                         Text("EXPORTAR .ZIP", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
                     }
                     Button(
-                        onClick = { onSalvar(configMontada) },
+                        onClick = {
+                            if (classificacoesPersonalizadas.isNotEmpty()) {
+                                com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
+                                    .salvarClassificacoesModelo(context, chaveModeloAtual, classificacoesPersonalizadas)
+                            }
+                            onSalvar(configMontada)
+                        },
                         enabled = podeSalvar && !processandoArquivo,
                         modifier = Modifier.weight(1.25f).height(50.dp),
                         shape = RoundedCornerShape(12.dp),
@@ -191,15 +251,40 @@ fun TelaConfiguracaoModelo(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(vertical = 14.dp)
         ) {
-            // ── SEÇÃO 1: ESCOLHER MODELO DE VISÃO COMPUTACIONAL ──
+            // ── ORIENTAÇÃO RÁPIDA AO USUÁRIO ──
             item {
-                SectionHeader(icon = Icons.Default.Memory, title = "1. Escolher Modelo de Visão Computacional")
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFE8F5E9),
+                    border = BorderStroke(1.dp, Color(0xFFC8E6C9)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.AutoAwesome, null, tint = verde, modifier = Modifier.size(18.dp))
+                        Text(
+                            "Escolha abaixo o que a câmera deve reconhecer e contar. Tudo funciona 100% no celular, sem internet.",
+                            fontSize = 12.sp,
+                            color = Color(0xFF1B5E20),
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+
+            // ── SEÇÃO 1: ESCOLHER O QUE A IA VAI IDENTIFICAR ──
+            item {
+                SectionHeader(icon = Icons.Default.Memory, title = "1. O que a câmera vai identificar?")
             }
 
             items(MODELOS_EMBUTIDOS) { modelo ->
                 val selecionado = modeloInternoPath.isNullOrBlank() &&
                         modeloExternoUri == null &&
-                        modeloSelecionado?.nomeArquivo == modelo.nomeArquivo
+                        modeloSelecionado?.nomeArquivo == modelo.nomeArquivo &&
+                        modeloSelecionado?.nomeExibicao == modelo.nomeExibicao
                 CartaoModeloEmbutido(
                     modelo = modelo,
                     selecionado = selecionado,
@@ -209,6 +294,10 @@ fun TelaConfiguracaoModelo(
                         modeloExternoUri = null
                         modeloExternoNome = ""
                         labelsTexto = modelo.labelsDefault.joinToString(", ")
+                        val ehCacau = modelo.nomeArquivo == "detector.tflite" || modelo.nomeArquivo == "detector_doenca.tflite"
+                        if (!ehCacau) {
+                            usarModeloSecundario = false
+                        }
                     }
                 )
             }
@@ -233,20 +322,21 @@ fun TelaConfiguracaoModelo(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.CheckCircle, null, tint = verde, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text("Modelo externo ativo:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1B5E20))
+                                Text("Modelo próprio em uso:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1B5E20))
                             }
                             OutlinedTextField(
                                 value = modeloExternoNome,
                                 onValueChange = { modeloExternoNome = it },
-                                label = { Text("Nome de Exibição") },
+                                label = { Text("Nome do seu modelo") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         } else {
                             Text(
-                                "Compatível com modelos YOLO (.tflite) ou pacotes .zip exportados pelo BreedAI.",
+                                "Quer contar outra planta, fruta, folha ou praga? Você pode importar seu próprio arquivo de IA (.tflite ou pacote .zip):",
                                 fontSize = 12.sp,
-                                color = Color(0xFF5F6F61)
+                                color = Color(0xFF5F6F61),
+                                lineHeight = 16.sp
                             )
                         }
 
@@ -261,12 +351,12 @@ fun TelaConfiguracaoModelo(
                             if (processandoArquivo) {
                                 CircularProgressIndicator(modifier = Modifier.size(18.dp), color = verde, strokeWidth = 2.dp)
                                 Spacer(Modifier.width(8.dp))
-                                Text("IMPORTANDO...")
+                                Text("VERIFICANDO ARQUIVO...")
                             } else {
                                 Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    if (customAtivo) "TROCAR MODELO (.TFLITE / .ZIP)" else "IMPORTAR MODELO EXTERNO (.TFLITE / .ZIP)",
+                                    if (customAtivo) "TROCAR ARQUIVO DE IA (.TFLITE / .ZIP)" else "IMPORTAR MODELO PRÓPRIO (.TFLITE / .ZIP)",
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -276,12 +366,17 @@ fun TelaConfiguracaoModelo(
                 }
             }
 
-            // ── SEÇÃO 2: MODO COMBINADO (2 IAS) ──
+            // ── SEÇÃO 2: ANÁLISE EM 2 ETAPAS PARA CACAU ──
             item {
-                SectionHeader(icon = Icons.Default.AutoAwesome, title = "2. Modo Combinado (2 IAs)")
+                SectionHeader(icon = Icons.Default.AutoAwesome, title = "2. Análise Dupla para Cacau (Opcional)")
             }
 
             item {
+                val modeloAtualEhCacau = modeloInternoPath.isNullOrBlank() &&
+                        modeloExternoUri == null &&
+                        (modeloSelecionado == null ||
+                                modeloSelecionado?.nomeArquivo == "detector.tflite" ||
+                                modeloSelecionado?.nomeArquivo == "detector_doenca.tflite")
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -295,44 +390,85 @@ fun TelaConfiguracaoModelo(
                     ),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                "Contagem + Diagnóstico",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = Color(0xFF1B5E20)
-                            )
-                            Text(
-                                "Usa o modelo de contagem na câmera e classifica doenças automaticamente na revisão.",
-                                fontSize = 12.sp,
-                                color = Color(0xFF4E5E50)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(
+                                    "Contar ao vivo + Diagnosticar Doenças na Foto",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF1B5E20)
+                                )
+                                Text(
+                                    if (usarModeloSecundario) "Ativado • Indicado para avaliação de cacau"
+                                    else "Opcional • Deixe desligado para outras culturas",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (usarModeloSecundario) verde else Color(0xFF5F6F61)
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Switch(
+                                checked = usarModeloSecundario,
+                                onCheckedChange = { ligar ->
+                                    usarModeloSecundario = ligar
+                                    if (ligar && modeloAtualEhCacau) {
+                                        val baseLabels = (listaLabels + com.example.myapplication.data.LABELS_DOENCA_CACAU + listOf("cacau", "fruto"))
+                                            .distinct()
+                                        labelsTexto = baseLabels.joinToString(", ")
+                                    }
+                                }
                             )
                         }
-                        Spacer(Modifier.width(10.dp))
-                        Switch(
-                            checked = usarModeloSecundario,
-                            onCheckedChange = {
-                                usarModeloSecundario = it
-                                if (it) {
-                                    val baseLabels = (listaLabels + com.example.myapplication.data.LABELS_DOENCA_CACAU + listOf("cacau", "fruto"))
-                                        .distinct()
-                                    labelsTexto = baseLabels.joinToString(", ")
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (usarModeloSecundario) Color.White.copy(alpha = 0.78f) else Color(0xFFF6F9F6),
+                            border = BorderStroke(1.dp, Color(0xFFDCE7DC)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    "Como funciona na prática:",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF1B5E20)
+                                )
+                                Text(
+                                    "1. Na câmera ao vivo: usa o detector rápido para marcar os frutos sem engasgos.\n" +
+                                            "2. Depois de tirar a foto: uma segunda IA avalia cada fruto e separa automaticamente em Sadio, Podridão Parda, Monilíase ou Vassoura de Bruxa.",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF3E4E40),
+                                    lineHeight = 16.sp
+                                )
+                                if (!modeloAtualEhCacau) {
+                                    Text(
+                                        "Obs.: você selecionou outro modelo acima (não é cacau). Mantenha esta opção desligada para não misturar doenças de cacau nas suas fotos.",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFFE65100),
+                                        lineHeight = 15.sp
+                                    )
                                 }
                             }
-                        )
+                        }
                     }
                 }
             }
 
-            // ── SEÇÃO 3: SENSIBILIDADE E CLASSES DETECTADAS ──
+            // ── SEÇÃO 3: AJUSTE DE PRECISÃO E FILTROS ──
             item {
-                SectionHeader(icon = Icons.Default.Tune, title = "3. Sensibilidade e Classes Detectadas")
+                SectionHeader(icon = Icons.Default.Tune, title = "3. Precisão e O que Contar")
             }
 
             item {
@@ -350,7 +486,7 @@ fun TelaConfiguracaoModelo(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Confiança mínima: $thresholdVal%", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
+                                Text("Certeza mínima da IA: $thresholdVal%", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
                                 if (thresholdVal > 60) {
                                     Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFFFFECB3)) {
                                         Text(
@@ -371,9 +507,16 @@ fun TelaConfiguracaoModelo(
                                 colors = SliderDefaults.colors(thumbColor = verde, activeTrackColor = verde)
                             )
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("10% (mais sensível)", fontSize = 11.sp, color = Color.Gray)
-                                Text("95% (mais restrito)", fontSize = 11.sp, color = Color.Gray)
+                                Text("10% (detecta mais)", fontSize = 11.sp, color = Color.Gray)
+                                Text("95% (mais exigente)", fontSize = 11.sp, color = Color.Gray)
                             }
+                            Text(
+                                "Dica: diminua se a IA perder frutos; aumente se estiver marcando folhas ou galhos por engano.",
+                                fontSize = 11.sp,
+                                color = Color(0xFF5F6F61),
+                                lineHeight = 15.sp,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
                         }
 
                         HorizontalDivider(color = Color(0xFFEEF3EE))
@@ -383,7 +526,7 @@ fun TelaConfiguracaoModelo(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Limite por foto", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
+                            Text("Máximo de itens por foto", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { if (maxResultados > 1) maxResultados-- }, modifier = Modifier.size(36.dp)) {
                                     Icon(Icons.Default.RemoveCircle, null, tint = Color(0xFFC62828), modifier = Modifier.size(28.dp))
@@ -397,7 +540,95 @@ fun TelaConfiguracaoModelo(
 
                         HorizontalDivider(color = Color(0xFFEEF3EE))
 
-                        Text("Classes / Rótulos filtrados", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF1B5E20))
+                        Text("O que contar na foto (Filtro de classes)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color(0xFF1B5E20))
+
+                        diagnosticoModelo?.let { diag ->
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (diag.compativel) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                                border = BorderStroke(1.dp, if (diag.compativel) Color(0xFFA5D6A7) else Color(0xFFEF9A9A)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        diag.arquiteturaResumo,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = if (diag.compativel) Color(0xFF1B5E20) else Color(0xFFC62828)
+                                    )
+                                    Text(
+                                        diag.avisoUsuario,
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF3E4E40)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (classesDisponiveisNoModelo.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    "Itens que este modelo sabe reconhecer (${classesDisponiveisNoModelo.size}): toque para ligar/desligar",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color(0xFF4E6E52)
+                                )
+                                if (classesDisponiveisNoModelo.size > 8) {
+                                    OutlinedTextField(
+                                        value = buscaClasseModelo,
+                                        onValueChange = { buscaClasseModelo = it },
+                                        label = { Text("Buscar objeto ou fruta (ex: banana, apple)") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    val temBananaCoco = classesDisponiveisNoModelo.any { it.equals("banana", ignoreCase = true) }
+                                    val temMacaCoco = classesDisponiveisNoModelo.any { it.equals("apple", ignoreCase = true) }
+                                    if (temBananaCoco) {
+                                        AssistChip(
+                                            onClick = { labelsTexto = "banana" },
+                                            label = { Text("Só Banana", fontSize = 11.sp) }
+                                        )
+                                    }
+                                    if (temMacaCoco) {
+                                        AssistChip(
+                                            onClick = { labelsTexto = "apple" },
+                                            label = { Text("Só Maçã", fontSize = 11.sp) }
+                                        )
+                                    }
+                                    val sugeridas = classesDisponiveisNoModelo
+                                        .filter {
+                                            buscaClasseModelo.isBlank() ||
+                                                it.contains(buscaClasseModelo.trim(), ignoreCase = true) ||
+                                                traduzirLabelDisplay(it).contains(buscaClasseModelo.trim(), ignoreCase = true)
+                                        }
+                                        .take(15)
+                                    sugeridas.forEach { cls ->
+                                        val ativa = listaLabels.any { it.equals(cls, ignoreCase = true) }
+                                        FilterChip(
+                                            selected = ativa,
+                                            onClick = {
+                                                val nova = listaLabels.toMutableList()
+                                                if (ativa) nova.removeAll { it.equals(cls, ignoreCase = true) }
+                                                else nova.add(cls)
+                                                labelsTexto = nova.joinToString(", ")
+                                            },
+                                            label = { Text(traduzirLabelDisplay(cls), fontSize = 11.sp) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Text(
+                            "Itens ativos para contagem (cada um vira uma coluna na planilha exportada):",
+                            fontSize = 11.sp,
+                            color = Color(0xFF5F6F61)
+                        )
 
                         if (listaLabels.isNotEmpty()) {
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -405,7 +636,7 @@ fun TelaConfiguracaoModelo(
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                                         linha.forEach { label ->
                                             LabelChip(
-                                                texto = label,
+                                                texto = traduzirLabelDisplay(label),
                                                 onRemover = {
                                                     val nova = listaLabels.toMutableList().also { l -> l.remove(label) }
                                                     labelsTexto = nova.joinToString(", ")
@@ -416,7 +647,21 @@ fun TelaConfiguracaoModelo(
                                 }
                             }
                         } else {
-                            Text("Sem filtro: aceita todas as classes do modelo.", color = Color.Gray, fontSize = 12.sp)
+                            Text("Contando tudo: qualquer item reconhecido pela IA aparecerá na foto.", color = Color.Gray, fontSize = 12.sp)
+                        }
+
+                        if (onGerarVariaveisDoModelo != null && listaLabels.size > 1) {
+                            OutlinedButton(
+                                onClick = { onGerarVariaveisDoModelo(listaLabels) },
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = verde)
+                            ) {
+                                Icon(Icons.Default.PlaylistAddCheck, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Confirmar classes selecionadas na planilha", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
                         }
 
                         Row(
@@ -463,6 +708,97 @@ fun TelaConfiguracaoModelo(
                                 Text("Aceitar todas as classes", fontSize = 12.sp)
                             }
                         }
+
+                        HorizontalDivider(color = Color(0xFFEEF3EE))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Classificações na revisão (Regional)",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                color = Color(0xFF1B5E20)
+                            )
+                            TextButton(
+                                onClick = {
+                                    com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
+                                        .limparClassificacoesModelo(context, chaveModeloAtual)
+                                    val baseModelo = if (classesDisponiveisNoModelo.size in 2..15) {
+                                        classesDisponiveisNoModelo
+                                    } else {
+                                        modeloSelecionado?.labelsDefault ?: listaLabels
+                                    }
+                                    classificacoesPersonalizadas = baseModelo
+                                },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                            ) {
+                                Text("Puxar do modelo", fontSize = 11.sp, color = verde, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        Text(
+                            "Puxadas do modelo atual. Remova doenças que não ocorrem na sua região ou adicione suas próprias classificações:",
+                            fontSize = 11.sp,
+                            color = Color(0xFF5F6F61),
+                            lineHeight = 15.sp
+                        )
+                        if (classificacoesPersonalizadas.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                classificacoesPersonalizadas.chunked(2).forEach { linha ->
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                                        linha.forEach { cls ->
+                                            LabelChip(
+                                                texto = traduzirLabelDisplay(cls),
+                                                onRemover = {
+                                                    if (classificacoesPersonalizadas.size > 1) {
+                                                        val nova = classificacoesPersonalizadas.toMutableList().apply { remove(cls) }
+                                                        classificacoesPersonalizadas = nova
+                                                        com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
+                                                            .salvarClassificacoesModelo(context, chaveModeloAtual, nova)
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = novaClassificacaoTexto,
+                                onValueChange = { novaClassificacaoTexto = it },
+                                label = { Text("Nova classificação") },
+                                placeholder = { Text("ex: Madura, Sigatoka...") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true
+                            )
+                            IconButton(
+                                onClick = {
+                                    val limpo = novaClassificacaoTexto.trim()
+                                    if (limpo.isNotBlank()) {
+                                        val nova = classificacoesPersonalizadas.toMutableList()
+                                        if (nova.none { it.equals(limpo, ignoreCase = true) }) {
+                                            nova.add(limpo)
+                                            classificacoesPersonalizadas = nova
+                                            com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
+                                                .salvarClassificacoesModelo(context, chaveModeloAtual, nova)
+                                        }
+                                        novaClassificacaoTexto = ""
+                                    }
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(verde)
+                            ) {
+                                Icon(Icons.Default.Add, null, tint = Color.White)
+                            }
+                        }
                     }
                 }
             }
@@ -475,18 +811,45 @@ fun TelaConfiguracaoModelo(
 }
 
 private data class ModeloImportado(
-    val tflitePath: String,
-    val nomeExibicao: String,
-    val labels: List<String>,
+    val compativel: Boolean,
+    val tflitePath: String? = null,
+    val nomeExibicao: String = "",
+    val labels: List<String> = emptyList(),
     val threshold: Float? = null,
     val maxResultados: Int? = null,
-    val usarModeloSecundario: Boolean? = null
+    val usarModeloSecundario: Boolean? = null,
+    val inspecao: ObjectDetectorHelper.ModelInspectionReport? = null,
+    val erroMensagem: String? = null
 )
 
-private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloImportado? {
+private fun lerBytesComLimite(context: Context, uri: Uri, maxBytes: Int): ByteArray? {
+    val stream = context.contentResolver.openInputStream(uri) ?: return null
+    return stream.use { input ->
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(16384)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n <= 0) break
+            total += n
+            if (total > maxBytes) return null
+            out.write(buf, 0, n)
+        }
+        out.toByteArray()
+    }
+}
+
+private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloImportado {
     return try {
-        val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
-        if (rawBytes.isEmpty()) return null
+        val maxTamanhoModelo = 160 * 1024 * 1024 // Limite anti-OOM de 160 MB
+        val rawBytes = lerBytesComLimite(context, uri, maxTamanhoModelo)
+            ?: return ModeloImportado(
+                compativel = false,
+                erroMensagem = "Arquivo muito grande (acima de 160 MB) ou inacessível."
+            )
+        if (rawBytes.isEmpty()) {
+            return ModeloImportado(compativel = false, erroMensagem = "O arquivo selecionado está vazio.")
+        }
 
         val dirModelos = File(context.filesDir, "modelos_ia").apply { mkdirs() }
         val nomeOriginal = obterNomeArquivo(context, uri)
@@ -494,58 +857,95 @@ private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloI
             .ifBlank { "modelo_${System.currentTimeMillis()}" }
         val nomeSanitizado = nomeOriginal.replace(Regex("[^a-zA-Z0-9._-]"), "_")
 
-        // Se for pacote .zip exportado pelo BreedAI (magic bytes PK..) e contiver .tflite dentro
         val isZipContainer = ImportadorPlanilhaUniversal.isXlsxMagicBytes(rawBytes)
-        if (isZipContainer && !isTfliteFlatBuffer(rawBytes)) {
+        if (isZipContainer && !ObjectDetectorHelper.isTfliteFlatBuffer(rawBytes)) {
             var tfliteBytes: ByteArray? = null
             var manifest: ModelConfig.ManifestData? = null
             ZipInputStream(rawBytes.inputStream()).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
-                    val nomeLower = entry.name.lowercase(Locale.ROOT)
-                    when {
-                        nomeLower.endsWith(".tflite") -> tfliteBytes = zis.readBytes()
-                        nomeLower == "model_config.json" || nomeLower.endsWith("/model_config.json") -> {
-                            val json = zis.readBytes().toString(Charsets.UTF_8)
-                            manifest = ModelConfig.fromManifestJson(json)
+                    // Proteção contra Zip Slip (caminhos maliciosos ../) e Zip Bomb
+                    if (!entry.isDirectory && ImportadorPlanilhaUniversal.isSafeZipEntryName(entry.name)) {
+                        val nomeLower = entry.name.lowercase(Locale.ROOT)
+                        when {
+                            nomeLower.endsWith(".tflite") -> {
+                                tfliteBytes = ImportadorPlanilhaUniversal.readZipEntryBounded(zis, maxTamanhoModelo)
+                            }
+                            nomeLower == "model_config.json" || nomeLower.endsWith("/model_config.json") -> {
+                                val jsonBytes = ImportadorPlanilhaUniversal.readZipEntryBounded(zis, 1024 * 1024)
+                                if (jsonBytes != null) {
+                                    manifest = ModelConfig.fromManifestJson(jsonBytes.toString(Charsets.UTF_8))
+                                }
+                            }
                         }
                     }
                     entry = zis.nextEntry
                 }
             }
             val modelData = tfliteBytes
-            if (modelData != null && modelData.isNotEmpty()) {
-                val destFile = File(dirModelos, "${nomeSanitizado}_${System.currentTimeMillis()}.tflite")
-                destFile.writeBytes(modelData)
-                val labels = manifest?.labelsFiltro?.takeIf { it.isNotEmpty() }
-                    ?: ObjectDetectorHelper.extractLabelsFromFile(destFile)
-                return ModeloImportado(
-                    tflitePath = destFile.absolutePath,
-                    nomeExibicao = manifest?.nomeExibicao?.ifBlank { nomeOriginal } ?: nomeOriginal,
-                    labels = labels,
-                    threshold = manifest?.threshold,
-                    maxResultados = manifest?.maxResultados,
-                    usarModeloSecundario = manifest?.usarModeloSecundario
+                ?: return ModeloImportado(
+                    compativel = false,
+                    erroMensagem = "O pacote .zip não contém nenhum arquivo .tflite seguro."
                 )
+
+            val destFile = File(dirModelos, "${nomeSanitizado}_${System.currentTimeMillis()}.tflite")
+            destFile.writeBytes(modelData)
+            val inspecao = ObjectDetectorHelper.inspecionarModeloArquivo(destFile)
+            if (!inspecao.compativel) {
+                destFile.delete()
+                return ModeloImportado(compativel = false, inspecao = inspecao, erroMensagem = inspecao.avisoUsuario)
             }
+            val labels = manifest?.labelsFiltro?.takeIf { it.isNotEmpty() } ?: inspecao.labelsExtraidas
+            return ModeloImportado(
+                compativel = true,
+                tflitePath = destFile.absolutePath,
+                nomeExibicao = manifest?.nomeExibicao?.ifBlank { nomeOriginal } ?: nomeOriginal,
+                labels = labels,
+                threshold = manifest?.threshold,
+                maxResultados = manifest?.maxResultados,
+                usarModeloSecundario = manifest?.usarModeloSecundario,
+                inspecao = inspecao
+            )
         }
 
-        // Arquivo .tflite direto
+        if (!ObjectDetectorHelper.isTfliteFlatBuffer(rawBytes)) {
+            return ModeloImportado(
+                compativel = false,
+                erroMensagem = "Arquivo inválido: o arquivo selecionado não possui assinatura TensorFlow Lite (TFL3) nem é um pacote .zip válido."
+            )
+        }
+
         val destFile = File(dirModelos, "${nomeSanitizado}_${System.currentTimeMillis()}.tflite")
         destFile.writeBytes(rawBytes)
-        val labelsExtraidos = ObjectDetectorHelper.extractLabelsFromFile(destFile)
+        val inspecao = ObjectDetectorHelper.inspecionarModeloArquivo(destFile)
+        if (!inspecao.compativel) {
+            destFile.delete()
+            return ModeloImportado(compativel = false, inspecao = inspecao, erroMensagem = inspecao.avisoUsuario)
+        }
         ModeloImportado(
+            compativel = true,
             tflitePath = destFile.absolutePath,
             nomeExibicao = nomeOriginal,
-            labels = labelsExtraidos
+            labels = inspecao.labelsExtraidas,
+            inspecao = inspecao
         )
-    } catch (_: Exception) {
-        null
+    } catch (e: Exception) {
+        ModeloImportado(
+            compativel = false,
+            erroMensagem = "Falha ao importar o modelo: ${e.message?.take(120) ?: "erro desconhecido"}"
+        )
     }
 }
 
-private fun isTfliteFlatBuffer(bytes: ByteArray): Boolean {
-    return bytes.size >= 8 && String(bytes, 4, 4, Charsets.US_ASCII) == "TFL3"
+private fun traduzirLabelDisplay(label: String): String {
+    return when (label.trim().lowercase(Locale.ROOT)) {
+        "apple" -> "apple (Maçã)"
+        "banana" -> "banana (Banana)"
+        "orange" -> "orange (Laranja)"
+        "podridaoparda" -> "PodridaoParda"
+        "vassourabruxa" -> "VassouraBruxa"
+        else -> label
+    }
 }
 
 private fun exportarPacoteModeloZip(context: Context, config: ModelConfig): File? {
@@ -640,7 +1040,7 @@ private fun CartaoModeloEmbutido(
                 Text(modelo.nomeExibicao, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Text(modelo.descricao, fontSize = 12.sp, color = Color.Gray)
                 Text(
-                    "Classes padrão: ${modelo.labelsDefault.joinToString(", ")}",
+                    "Identifica: ${modelo.labelsDefault.joinToString(", ") { traduzirLabelDisplay(it) }}",
                     fontSize = 11.sp,
                     color = Color(0xFF558B2F)
                 )

@@ -10,6 +10,7 @@ import com.example.myapplication.data.TipoVariavelExtra
 import com.example.myapplication.data.VariavelExtra
 import com.example.myapplication.data.variaveisExtrasIniciais
 import com.example.myapplication.userinterface.CaixaAuditavel
+import com.example.myapplication.userinterface.util.ImportadorPlanilhaUniversal
 import com.example.myapplication.userinterface.util.ObjectDetectorHelper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -18,12 +19,14 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito
+import org.tensorflow.lite.DataType
+import java.io.File
 
 class ModelAndStateUnitTest {
 
     @Test
     fun `modelos embutidos devem trazer modelo de contagem geral como padrao e modelo de doencas`() {
-        assertEquals(2, MODELOS_EMBUTIDOS.size)
+        assertEquals(4, MODELOS_EMBUTIDOS.size)
         val contagemModel = MODELOS_EMBUTIDOS.first()
         assertEquals("detector.tflite", contagemModel.nomeArquivo)
         assertTrue(contagemModel.labelsDefault.contains("cacau"))
@@ -32,6 +35,14 @@ class ModelAndStateUnitTest {
         assertEquals("detector_doenca.tflite", doencaModel.nomeArquivo)
         assertEquals("Cacau Doenças (Pré-carregado)", doencaModel.nomeExibicao)
         assertEquals(listOf("PodridaoParda", "Moniliase", "Sadio", "VassouraBruxa"), doencaModel.labelsDefault)
+
+        val bananaModel = MODELOS_EMBUTIDOS[2]
+        assertEquals("detector_frutas_coco.tflite", bananaModel.nomeArquivo)
+        assertEquals(listOf("banana"), bananaModel.labelsDefault)
+
+        val macaModel = MODELOS_EMBUTIDOS[3]
+        assertEquals("detector_frutas_coco.tflite", macaModel.nomeArquivo)
+        assertEquals(listOf("apple"), macaModel.labelsDefault)
 
         val defaultCfg = ModelConfig()
         assertTrue(defaultCfg.labelsFiltro.containsAll(contagemModel.labelsDefault))
@@ -261,5 +272,138 @@ class ModelAndStateUnitTest {
             )
             assertEquals("Esperado VassouraBruxa (3) para RGB($r,$g,$b)", 3, clsSeco)
         }
+    }
+
+    @Test
+    fun `testCocoFruitModel_ExtractsEmbeddedLabelsAndResolvesAppleBananaOrange`() {
+        val cocoAsset = listOf(
+            File("app/src/main/assets/detector_frutas_coco.tflite"),
+            File("src/main/assets/detector_frutas_coco.tflite")
+        ).firstOrNull { it.exists() }
+        assertNotNull("Asset detector_frutas_coco.tflite deve existir", cocoAsset)
+
+        val header = ByteArray(16)
+        cocoAsset!!.inputStream().use { it.read(header) }
+        assertTrue("Header TFL3 deve ser reconhecido", ObjectDetectorHelper.isTfliteFlatBuffer(header))
+
+        val labels = ObjectDetectorHelper.extractLabelsFromFile(cocoAsset)
+        assertTrue("Labelmap embutido deve ter >= 85 entradas (obtido ${labels.size})", labels.size >= 85)
+        assertEquals("person", labels.first())
+
+        val banana = ObjectDetectorHelper.resolverRotuloPorIndice(
+            classIdx = 51,
+            numClasses = labels.size,
+            modelLabels = labels,
+            customLabels = emptyList(),
+            fallbackDefault = "objeto"
+        )
+        val apple = ObjectDetectorHelper.resolverRotuloPorIndice(
+            classIdx = 52,
+            numClasses = labels.size,
+            modelLabels = labels,
+            customLabels = emptyList(),
+            fallbackDefault = "objeto"
+        )
+        val orange = ObjectDetectorHelper.resolverRotuloPorIndice(
+            classIdx = 54,
+            numClasses = labels.size,
+            modelLabels = labels,
+            customLabels = emptyList(),
+            fallbackDefault = "objeto"
+        )
+        assertEquals("banana", banana)
+        assertEquals("apple", apple)
+        assertEquals("orange", orange)
+        assertEquals("Banana", com.example.myapplication.userinterface.rotuloAmigavel(banana))
+        assertEquals("Maçã", com.example.myapplication.userinterface.rotuloAmigavel(apple))
+        assertEquals("Laranja", com.example.myapplication.userinterface.rotuloAmigavel(orange))
+    }
+
+    @Test
+    fun `testDiseaseRefinement_DetectsMoniliaseWhiteSporeClusterAndSadioWithCompetingDisease`() {
+        val w = 100
+        val h = 100
+        val pxSpore = (0xFF shl 24) or (230 shl 16) or (226 shl 8) or 214
+        val pxNecrosis = (0xFF shl 24) or (72 shl 16) or (62 shl 8) or 56
+        val grid = IntArray(w * h) { idx ->
+            val x = idx % w
+            if (x < w / 2) pxSpore else pxNecrosis
+        }
+        val refinedFromSadio = ObjectDetectorHelper.refinarClasseDoencaPorMorfologiaCor(
+            classIdx = 2,
+            probBest = 0.52f,
+            probClass0 = 0.14f,
+            pixels = grid,
+            width = w,
+            height = h,
+            x1Tensor = 10f,
+            y1Tensor = 10f,
+            x2Tensor = 90f,
+            y2Tensor = 90f,
+            probClass1 = 0.28f,
+            probClass3 = 0.06f
+        )
+        assertEquals("Sadio incerto com esporulação branca e necrose deve virar Moniliase (1)", 1, refinedFromSadio)
+    }
+
+    @Test
+    fun `testBuildQuantLut_HandlesSignedNormalizedUint8AndInt8`() {
+        val lutSignedUint8 = ObjectDetectorHelper.buildQuantLutForParams(
+            type = DataType.UINT8,
+            rawScale = 1f / 128f,
+            zp = 128
+        )!!
+        assertEquals(256, lutSignedUint8.size)
+        assertEquals(0, lutSignedUint8[0].toInt() and 0xFF)
+        assertEquals(255, lutSignedUint8[255].toInt() and 0xFF)
+
+        val lutUint8Norm01 = ObjectDetectorHelper.buildQuantLutForParams(
+            type = DataType.UINT8,
+            rawScale = 1f / 255f,
+            zp = 0
+        )!!
+        assertEquals(0, lutUint8Norm01[0].toInt() and 0xFF)
+        assertEquals(255, lutUint8Norm01[255].toInt() and 0xFF)
+
+        val lutInt8Norm = ObjectDetectorHelper.buildQuantLutForParams(
+            type = DataType.INT8,
+            rawScale = 1f / 255f,
+            zp = -128
+        )!!
+        assertEquals(-128, lutInt8Norm[0].toInt())
+        assertEquals(127, lutInt8Norm[255].toInt())
+    }
+
+    @Test
+    fun `testModelValidation_RejectsInvalidFileAndZipSlip`() {
+        assertFalse(ObjectDetectorHelper.isTfliteFlatBuffer("NOT_A_TFLITE_MODEL".toByteArray()))
+        assertTrue(ObjectDetectorHelper.isTfliteFlatBuffer(byteArrayOf(0x1C, 0, 0, 0, 'T'.code.toByte(), 'F'.code.toByte(), 'L'.code.toByte(), '3'.code.toByte())))
+
+        val tempBad = File.createTempFile("bad_model", ".tflite")
+        try {
+            tempBad.writeBytes("corrupted-bytes-1234567890".toByteArray())
+            val report = ObjectDetectorHelper.inspecionarModeloArquivo(tempBad)
+            assertFalse("Arquivo corrompido deve ser rejeitado", report.compativel)
+        } finally {
+            tempBad.delete()
+        }
+
+        assertFalse(ImportadorPlanilhaUniversal.isSafeZipEntryName("../evil.tflite"))
+        assertFalse(ImportadorPlanilhaUniversal.isSafeZipEntryName("/abs/path.tflite"))
+        assertFalse(ImportadorPlanilhaUniversal.isSafeZipEntryName("C:\\win\\path.tflite"))
+        assertTrue(ImportadorPlanilhaUniversal.isSafeZipEntryName("weights/best_float32.tflite"))
+    }
+
+    @Test
+    fun `testChaveModeloPersistente_SeparaModelosBananaMacaECustomizados`() {
+        val chaveBanana = ModelConfig(modeloSelecionado = MODELOS_EMBUTIDOS[2]).chaveModeloPersistente()
+        val chaveMaca = ModelConfig(modeloSelecionado = MODELOS_EMBUTIDOS[3]).chaveModeloPersistente()
+        val chaveDoenca = ModelConfig(modeloSelecionado = MODELOS_EMBUTIDOS[1]).chaveModeloPersistente()
+        val chaveCustom = ModelConfig(modeloInternoPath = "/data/user/0/modelos_ia/sigatoka_v2.tflite").chaveModeloPersistente()
+
+        assertNotEquals(chaveBanana, chaveMaca)
+        assertNotEquals(chaveBanana, chaveDoenca)
+        assertNotEquals(chaveBanana, chaveCustom)
+        assertEquals("custom_sigatoka_v2.tflite", chaveCustom)
     }
 }

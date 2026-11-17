@@ -253,4 +253,47 @@ class YoloDetectionAndScaleUnitTest {
         assertEquals(0f, nmsRes[0][5], 0.001f)
         assertEquals(1f, nmsRes[1][5], 0.001f)
     }
+
+    @Test
+    fun `testFundirContagemEDiagnosticoBreedAI_LowIouAndCenterProximityPairsDiseaseToPod`() {
+        // Caixa grande de contagem (detector.tflite) cobrindo o fruto inteiro
+        val contagem = listOf(
+            com.example.myapplication.userinterface.DetEstilizada(0.20f, 0.20f, 0.60f, 0.80f, 0.91f, "cacau")
+        )
+        // Caixa menor de lesão/doença centrada dentro do mesmo fruto (IoU < 0.25, mas centro próximo)
+        val secundario = listOf(
+            com.example.myapplication.userinterface.DetEstilizada(0.32f, 0.36f, 0.48f, 0.60f, 0.74f, "VassouraBruxa")
+        )
+
+        val resultado = com.example.myapplication.userinterface.fundirContagemEDiagnosticoBreedAI(contagem, secundario)
+
+        assertEquals(1, resultado.size)
+        assertEquals("VassouraBruxa", resultado[0].rotulo)
+        assertEquals(0.20f, resultado[0].normLeft, 0.001f)
+    }
+
+    @Test
+    fun `testDecodeYoloRawCandidates_4ClassPreservesAllProbs`() {
+        val out = Array(1) { FloatArray(8) } // [1, 4+4] não-transposto: cx, cy, w, h, p0, p1, p2, p3
+        out[0] = floatArrayOf(0.50f, 0.50f, 0.30f, 0.40f, 0.22f, 0.12f, 0.61f, 0.18f)
+
+        val candidates = com.example.myapplication.userinterface.util.ObjectDetectorHelper.decodeYoloRawCandidates(
+            out = out,
+            numAnchors = 1,
+            numClasses = 4,
+            transposed = false,
+            inputWidth = 640,
+            inputHeight = 640,
+            scoreThreshold = 0.25f
+        )
+
+        assertEquals(1, candidates.size)
+        assertEquals(10, candidates[0].size)
+        assertEquals(0.61f, candidates[0][4], 0.001f)
+        assertEquals(2f, candidates[0][5], 0.001f)
+        assertEquals(0.22f, candidates[0][6], 0.001f)
+        assertEquals(0.12f, candidates[0][7], 0.001f)
+        assertEquals(0.61f, candidates[0][8], 0.001f)
+        assertEquals(0.18f, candidates[0][9], 0.001f)
+    }
 }

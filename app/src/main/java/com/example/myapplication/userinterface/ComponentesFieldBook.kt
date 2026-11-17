@@ -70,21 +70,27 @@ fun criarParDetectoresBreedAI(
     context: Context,
     modelConfig: ModelConfig
 ): Pair<ObjectDetectorHelper, ObjectDetectorHelper?> {
-    if (!modelConfig.usarModeloSecundario) {
+    val ehDoencaEmbutido = modelConfig.modeloInternoPath.isNullOrBlank() &&
+            modelConfig.modeloExternoUri == null &&
+            modelConfig.modeloSelecionado?.nomeArquivo == "detector_doenca.tflite"
+
+    if (!modelConfig.usarModeloSecundario && !ehDoencaEmbutido) {
         return criarDetectorHelperBreedAI(context, modelConfig) to null
     }
 
-    val usaDoencaEmbutidoComoPrincipal =
+    val usaDoencaComoPrincipal =
         modelConfig.modeloInternoPath.isNullOrBlank() &&
                 modelConfig.modeloExternoUri == null &&
-                (modelConfig.modeloSelecionado == null || modelConfig.modeloSelecionado.nomeArquivo == "detector_doenca.tflite")
+                (modelConfig.modeloSelecionado == null ||
+                        modelConfig.modeloSelecionado.nomeArquivo == "detector_doenca.tflite" ||
+                        modelConfig.modeloSelecionado.nomeArquivo == "detector.tflite")
 
-    val primario = if (usaDoencaEmbutidoComoPrincipal) {
+    val primario = if (usaDoencaComoPrincipal) {
         ObjectDetectorHelper(
             context = context,
             detectorListener = null,
             modelSource = ObjectDetectorHelper.ModelSource.Asset("detector.tflite"),
-            scoreThreshold = modelConfig.threshold,
+            scoreThreshold = minOf(modelConfig.threshold, 0.25f),
             maxResults = modelConfig.maxResultados,
             defaultLabel = "objeto",
             customLabels = listOf("cacau", "fruto")
@@ -97,7 +103,7 @@ fun criarParDetectoresBreedAI(
         context = context,
         detectorListener = null,
         modelSource = ObjectDetectorHelper.ModelSource.Asset(modelConfig.modeloSecundarioArquivo),
-        scoreThreshold = modelConfig.threshold,
+        scoreThreshold = minOf(modelConfig.threshold, 0.22f),
         maxResults = modelConfig.maxResultados,
         defaultLabel = com.example.myapplication.data.LABELS_DOENCA_CACAU.firstOrNull() ?: "objeto",
         customLabels = com.example.myapplication.data.LABELS_DOENCA_CACAU
@@ -118,118 +124,158 @@ fun CameraFullscreenBreedAI(
     onCancelar: () -> Unit,
     onFotoCapturada: (Uri, List<Detection>, Float, Float) -> Unit
 ) {
-    var resultadoAtual by remember { mutableStateOf<ObjectDetectorHelper.ResultadoDeteccao?>(null) }
-    var ultimoResultadoValido by remember { mutableStateOf<ObjectDetectorHelper.ResultadoDeteccao?>(null) }
-    var ultimoTimestampValidoMs by remember { mutableLongStateOf(0L) }
+    // Mantém estado dentro de MutableState sem lê-lo neste Composable pai para evitar recompor PreviewView/CameraWithAI a cada frame
+    val resultadoAtualState = remember { mutableStateOf<ObjectDetectorHelper.ResultadoDeteccao?>(null) }
+    val ultimoResultadoValidoState = remember { mutableStateOf<ObjectDetectorHelper.ResultadoDeteccao?>(null) }
+    val ultimoTimestampValidoState = remember { mutableLongStateOf(0L) }
+
+    val labelsModelo = remember(detectorHelper, modelConfig.modeloSelecionado, modelConfig.modeloInternoPath) {
+        detectorHelper.obterLabelsModelo().filter { it != "???" && it.isNotBlank() }
+    }
+    val filtroCasaComModelo = remember(modelConfig.labelsFiltro, labelsModelo) {
+        modelConfig.labelsFiltro.isNotEmpty() &&
+            labelsModelo.isNotEmpty() &&
+            modelConfig.labelsFiltro.any { f ->
+                labelsModelo.any { m -> m.contains(f, ignoreCase = true) || f.contains(m, ignoreCase = true) }
+            }
+    }
+
+    fun filtrarDeteccoes(deteccoes: List<Detection>): List<Detection> {
+        if (modoSemFrutos) return emptyList()
+        return deteccoes.filter { det ->
+            val label = det.categories.firstOrNull()?.label?.lowercase(Locale.ROOT) ?: ""
+            val score = det.categories.firstOrNull()?.score ?: 0f
+            val labelPermitido = when {
+                modelConfig.labelsFiltro.isEmpty() -> true
+                filtroCasaComModelo -> modelConfig.labelsFiltro.any { f ->
+                    label.equals(f, ignoreCase = true) || label.contains(f.lowercase(Locale.ROOT))
+                } || label == "objeto"
+                else -> modelConfig.labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) } ||
+                    labelsModelo.any { m -> label.equals(m, ignoreCase = true) } ||
+                    label in setOf("objeto", "cacau", "fruto")
+            }
+            score >= modelConfig.threshold && labelPermitido
+        }
+    }
 
     Box(Modifier.fillMaxSize()) {
         CameraWithAI(detectorHelper, imageCapture) { res ->
-            resultadoAtual = res
+            resultadoAtualState.value = res
             if (res.deteccoes.isNotEmpty()) {
-                ultimoResultadoValido = res
-                ultimoTimestampValidoMs = System.currentTimeMillis()
+                ultimoResultadoValidoState.value = res
+                ultimoTimestampValidoState.longValue = System.currentTimeMillis()
             }
         }
 
-        val resultadoAtivo = if ((resultadoAtual?.deteccoes?.size ?: 0) > 0) {
-            resultadoAtual
-        } else if (System.currentTimeMillis() - ultimoTimestampValidoMs < 650L) {
-            ultimoResultadoValido
-        } else {
-            resultadoAtual
-        }
-
-        val deteccoesAtuais = resultadoAtivo?.deteccoes ?: emptyList()
-        val frameWidth = resultadoAtivo?.larguraImagem ?: 1f
-        val frameHeight = resultadoAtivo?.alturaImagem ?: 1f
-
-        val listaFiltrada = if (modoSemFrutos) {
-            emptyList()
-        } else {
-            val labelsModelo = detectorHelper.obterLabelsModelo()
-            deteccoesAtuais.filter { det ->
-                val label = det.categories.firstOrNull()?.label?.lowercase(Locale.ROOT) ?: ""
-                val score = det.categories.firstOrNull()?.score ?: 0f
-                score >= modelConfig.threshold &&
-                        (modelConfig.labelsFiltro.isEmpty() ||
-                                modelConfig.labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) } ||
-                                labelsModelo.any { m -> label.equals(m.lowercase(Locale.ROOT), ignoreCase = true) } ||
-                                label in setOf("objeto", "cacau", "fruto"))
-            }
-        }
-
-        if (!modoSemFrutos) {
-            BoundingBoxOverlay(
-                detections = listaFiltrada,
-                bitmapWidth = frameWidth,
-                bitmapHeight = frameHeight,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
-        Surface(
-            Modifier
-                .statusBarsPadding()
-                .align(Alignment.TopCenter)
-                .padding(horizontal = 52.dp, vertical = 6.dp),
-            color = Color.Black.copy(alpha = 0.78f),
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            Row(
-                Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    tituloHud,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    maxLines = 1
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (modoSemFrutos) "• Sem Frutos (0)" else "• IA: ${listaFiltrada.size}",
-                    color = if (modoSemFrutos) Color(0xFFFFB74D) else Color(0xFF00E676),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
-                )
-            }
-        }
-
-        IconButton(
-            onClick = onCancelar,
-            modifier = Modifier
-                .statusBarsPadding()
-                .align(Alignment.TopEnd)
-                .padding(end = 10.dp, top = 6.dp)
-        ) {
-            Icon(Icons.Default.Cancel, "Fechar câmera", tint = Color.White, modifier = Modifier.size(30.dp))
-        }
-
-        ExtendedFloatingActionButton(
-            onClick = {
+        CameraLiveOverlayAndControls(
+            resultadoAtualState = resultadoAtualState,
+            ultimoResultadoValidoState = ultimoResultadoValidoState,
+            ultimoTimestampValidoState = ultimoTimestampValidoState,
+            tituloHud = tituloHud,
+            modoSemFrutos = modoSemFrutos,
+            filtrarDeteccoes = ::filtrarDeteccoes,
+            onCancelar = onCancelar,
+            onCapturarClick = { listaFiltrada, frameWidth, frameHeight ->
                 val snapshotCaixas = listaFiltrada.toList()
-                val snapshotW = frameWidth
-                val snapshotH = frameHeight
                 tirarFoto(context, imageCapture, idParaArquivo) { uri ->
-                    onFotoCapturada(uri, snapshotCaixas, snapshotW, snapshotH)
+                    onFotoCapturada(uri, snapshotCaixas, frameWidth, frameHeight)
                 }
-            },
-            modifier = Modifier
-                .navigationBarsPadding()
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 18.dp),
-            containerColor = if (modoSemFrutos) Color(0xFFEF6C00) else VERDE_PRINCIPAL,
-            contentColor = Color.White,
-            text = {
-                Text(
-                    if (modoSemFrutos) "CAPTURAR PROVA (0 FRUTOS)" else "CAPTURAR (${listaFiltrada.size})",
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            icon = { Icon(Icons.Default.PhotoCamera, null) }
+            }
         )
     }
+}
+
+@Composable
+private fun BoxScope.CameraLiveOverlayAndControls(
+    resultadoAtualState: State<ObjectDetectorHelper.ResultadoDeteccao?>,
+    ultimoResultadoValidoState: State<ObjectDetectorHelper.ResultadoDeteccao?>,
+    ultimoTimestampValidoState: State<Long>,
+    tituloHud: String,
+    modoSemFrutos: Boolean,
+    filtrarDeteccoes: (List<Detection>) -> List<Detection>,
+    onCancelar: () -> Unit,
+    onCapturarClick: (List<Detection>, Float, Float) -> Unit
+) {
+    val resultadoAtual = resultadoAtualState.value
+    val resultadoAtivo = if ((resultadoAtual?.deteccoes?.size ?: 0) > 0) {
+        resultadoAtual
+    } else if (System.currentTimeMillis() - ultimoTimestampValidoState.value < 650L) {
+        ultimoResultadoValidoState.value
+    } else {
+        resultadoAtual
+    }
+
+    val deteccoesAtuais = resultadoAtivo?.deteccoes ?: emptyList()
+    val frameWidth = resultadoAtivo?.larguraImagem ?: 1f
+    val frameHeight = resultadoAtivo?.alturaImagem ?: 1f
+    val listaFiltrada = remember(resultadoAtivo, modoSemFrutos) {
+        filtrarDeteccoes(deteccoesAtuais)
+    }
+
+    if (!modoSemFrutos) {
+        BoundingBoxOverlay(
+            detections = listaFiltrada,
+            bitmapWidth = frameWidth,
+            bitmapHeight = frameHeight,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+
+    Surface(
+        Modifier
+            .statusBarsPadding()
+            .align(Alignment.TopCenter)
+            .padding(horizontal = 52.dp, vertical = 6.dp),
+        color = Color.Black.copy(alpha = 0.78f),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                tituloHud,
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                maxLines = 1
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (modoSemFrutos) "• Sem Frutos (0)" else "• IA: ${listaFiltrada.size}",
+                color = if (modoSemFrutos) Color(0xFFFFB74D) else Color(0xFF00E676),
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp
+            )
+        }
+    }
+
+    IconButton(
+        onClick = onCancelar,
+        modifier = Modifier
+            .statusBarsPadding()
+            .align(Alignment.TopEnd)
+            .padding(end = 10.dp, top = 6.dp)
+    ) {
+        Icon(Icons.Default.Cancel, "Fechar câmera", tint = Color.White, modifier = Modifier.size(30.dp))
+    }
+
+    ExtendedFloatingActionButton(
+        onClick = { onCapturarClick(listaFiltrada, frameWidth, frameHeight) },
+        modifier = Modifier
+            .navigationBarsPadding()
+            .align(Alignment.BottomCenter)
+            .padding(bottom = 18.dp),
+        containerColor = if (modoSemFrutos) Color(0xFFEF6C00) else VERDE_PRINCIPAL,
+        contentColor = Color.White,
+        text = {
+            Text(
+                if (modoSemFrutos) "CAPTURAR PROVA (0 FRUTOS)" else "CAPTURAR (${listaFiltrada.size})",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        icon = { Icon(Icons.Default.PhotoCamera, null) }
+    )
 }
 
 /**
@@ -356,9 +402,12 @@ fun SeletorSituacaoPlantaCard(
 fun BlocoVariaveisExtrasCard(
     variaveisAtivas: List<VariavelExtra>,
     valoresAtuais: MutableMap<String, String>,
-    onAbrirConfigVariaveis: () -> Unit
+    onAbrirConfigVariaveis: () -> Unit,
+    todasVariaveis: List<VariavelExtra> = variaveisAtivas,
+    onToggleVariavel: ((VariavelExtra, Boolean) -> Unit)? = null,
+    onDesativarTodas: (() -> Unit)? = null
 ) {
-    if (variaveisAtivas.isEmpty()) {
+    if (variaveisAtivas.isEmpty() && onToggleVariavel == null) {
         Card(
             onClick = onAbrirConfigVariaveis,
             modifier = Modifier.fillMaxWidth(),
@@ -383,13 +432,13 @@ fun BlocoVariaveisExtrasCard(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Variáveis Fenotípicas (Traits)",
+                        "Variáveis Extras da Coleta",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF1B5E20)
                     )
                     Text(
-                        "Toque para ativar notas de vigor, maturação ou medidas",
+                        "Toque para ativar anotações opcionais ou criar novas",
                         fontSize = 11.sp,
                         color = Color(0xFF5F6F61)
                     )
@@ -424,7 +473,8 @@ fun BlocoVariaveisExtrasCard(
                     Icon(Icons.Default.Tune, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "Variáveis Fenotípicas (${variaveisAtivas.size})",
+                        if (variaveisAtivas.isEmpty()) "Variáveis Extras (Somente Contagem IA)"
+                        else "Variáveis Extras (${variaveisAtivas.size} ativa(s))",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
                         color = Color(0xFF1B5E20)
@@ -434,19 +484,56 @@ fun BlocoVariaveisExtrasCard(
                     if (valoresAtuais.isNotEmpty()) {
                         TextButton(
                             onClick = { valoresAtuais.clear() },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text("Limpar", fontSize = 11.sp, color = Color(0xFFC62828), fontWeight = FontWeight.SemiBold)
                         }
                     }
                     TextButton(
                         onClick = onAbrirConfigVariaveis,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                     ) {
-                        Text("Editar Traits", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = VERDE_PRINCIPAL)
+                        Text("+ Criar / Excluir", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = VERDE_PRINCIPAL)
                     }
                 }
             }
+
+            if (onToggleVariavel != null) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (onDesativarTodas != null) {
+                        FilterChip(
+                            selected = variaveisAtivas.isEmpty(),
+                            onClick = onDesativarTodas,
+                            label = {
+                                Text(
+                                    "Somente Contagem IA",
+                                    fontSize = 11.sp,
+                                    fontWeight = if (variaveisAtivas.isEmpty()) FontWeight.Bold else FontWeight.Medium
+                                )
+                            }
+                        )
+                    }
+                    todasVariaveis.forEach { v ->
+                        FilterChip(
+                            selected = v.ativa,
+                            onClick = { onToggleVariavel(v, !v.ativa) },
+                            label = { Text(v.nome, fontSize = 11.sp) }
+                        )
+                    }
+                }
+            }
+
+            if (variaveisAtivas.isEmpty()) {
+                Text(
+                    "Modo rápido: registra e exporta somente a contagem da IA (toque em um item acima para adicionar à coleta).",
+                    fontSize = 11.sp,
+                    color = Color(0xFF5F6F61)
+                )
+            }
+
             variaveisAtivas.forEach { variavel ->
                     val valorAtual = valoresAtuais[variavel.nome] ?: ""
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

@@ -44,10 +44,19 @@ fun TelaEdicaoDados(
     onAbrirConfigVariaveis: () -> Unit,
     onEditarCaixas: (RegistroColeta) -> Unit,
     onAtualizarDadosRegistro: (RegistroColeta) -> Unit,
-    onExcluirRegistro: (RegistroColeta) -> Unit
+    onExcluirRegistro: (RegistroColeta) -> Unit,
+    classesModeloExportacao: List<String> = emptyList()
 ) {
     val context = LocalContext.current
     val verde = Color(0xFF2E7D32)
+
+    val classesParaCsv = remember(classesModeloExportacao, registros.toList()) {
+        val genericos = setOf("objeto", "cacau", "fruto", "manual", "???")
+        (classesModeloExportacao + registros.flatMap { r -> r.caixas.map { it.rotulo } })
+            .map { it.trim() }
+            .filter { it.isNotBlank() && it.lowercase() !in genericos }
+            .distinctBy { it.lowercase() }
+    }
 
     var filtroSituacao by remember { mutableStateOf<SituacaoPlanta?>(null) }
     var registroParaExcluir by remember { mutableStateOf<RegistroColeta?>(null) }
@@ -208,7 +217,8 @@ fun TelaEdicaoDados(
                                     labelTratamento = labelTratamento,
                                     labelParcela = labelParcela,
                                     labelPlanta = labelPlanta,
-                                    variaveisAtivas = variaveisAtivas
+                                    variaveisAtivas = variaveisAtivas,
+                                    classesModeloExportacao = classesParaCsv
                                 )
                             }
                         },
@@ -232,7 +242,8 @@ fun TelaEdicaoDados(
                                 labelTratamento = labelTratamento,
                                 labelParcela = labelParcela,
                                 labelPlanta = labelPlanta,
-                                variaveisAtivas = variaveisAtivas
+                                variaveisAtivas = variaveisAtivas,
+                                classesModeloExportacao = classesParaCsv
                             )
                             if (csvFile != null) {
                                 compartilharArquivoViaAndroid(

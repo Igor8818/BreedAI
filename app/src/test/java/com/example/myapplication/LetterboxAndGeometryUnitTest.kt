@@ -1,9 +1,13 @@
 package com.example.myapplication
 
+import com.example.myapplication.userinterface.AlcaCaixa
 import com.example.myapplication.userinterface.CaixaAuditavel
 import com.example.myapplication.userinterface.DetEstilizada
+import com.example.myapplication.userinterface.ajustarCantoCaixaAuditavel
+import com.example.myapplication.userinterface.detectarAlcaCaixaSelecionada
 import com.example.myapplication.userinterface.fundirDeteccoesComSnapping
 import com.example.myapplication.userinterface.iouNorm
+import com.example.myapplication.userinterface.moverCaixaAuditavel
 import com.example.myapplication.userinterface.redimensionarCaixaAuditavel
 import com.example.myapplication.userinterface.selecionarIndiceCaixaNoToque
 import org.junit.Assert.assertEquals
@@ -223,5 +227,44 @@ class LetterboxAndGeometryUnitTest {
         val novo = caixasFundidas[1]
         assertEquals(0.65f, novo.normLeft, 0.001f)
         assertEquals("cacau", novo.rotulo)
+    }
+
+    @Test
+    fun `testMoverCaixaAuditavel_PreservaTamanhoEClampaDentroDaFoto`() {
+        val original = CaixaAuditavel(0.20f, 0.30f, 0.40f, 0.50f, rotulo = "Manual", manual = true)
+
+        val movida = moverCaixaAuditavel(original, deltaNormX = 0.15f, deltaNormY = -0.10f)
+        assertEquals(0.35f, movida.normLeft, 0.001f)
+        assertEquals(0.20f, movida.normTop, 0.001f)
+        assertEquals(0.20f, movida.largura, 0.001f)
+        assertEquals(0.20f, movida.altura, 0.001f)
+
+        val clampBorda = moverCaixaAuditavel(original, deltaNormX = 0.90f, deltaNormY = 0.90f)
+        assertEquals(0.80f, clampBorda.normLeft, 0.001f)
+        assertEquals(1.00f, clampBorda.normRight, 0.001f)
+        assertEquals(0.80f, clampBorda.normTop, 0.001f)
+        assertEquals(1.00f, clampBorda.normBottom, 0.001f)
+    }
+
+    @Test
+    fun `testAjustarCantoEDetectarAlcaCaixaSelecionada_MoveCantosERespeitaTamanhoMinimo`() {
+        val box = CaixaAuditavel(0.30f, 0.30f, 0.60f, 0.60f, rotulo = "banana", manual = true)
+
+        assertEquals(AlcaCaixa.CANTO_SE, detectarAlcaCaixaSelecionada(box, 0.305f, 0.305f, 0.04f, 0.04f))
+        assertEquals(AlcaCaixa.CANTO_ID, detectarAlcaCaixaSelecionada(box, 0.595f, 0.595f, 0.04f, 0.04f))
+        assertEquals(AlcaCaixa.CORPO, detectarAlcaCaixaSelecionada(box, 0.45f, 0.45f, 0.04f, 0.04f))
+        assertEquals(AlcaCaixa.NENHUMA, detectarAlcaCaixaSelecionada(box, 0.10f, 0.10f, 0.04f, 0.04f))
+
+        val alargada = ajustarCantoCaixaAuditavel(box, AlcaCaixa.CANTO_ID, novoNormX = 0.85f, novoNormY = 0.75f)
+        assertEquals(0.30f, alargada.normLeft, 0.001f)
+        assertEquals(0.30f, alargada.normTop, 0.001f)
+        assertEquals(0.85f, alargada.normRight, 0.001f)
+        assertEquals(0.75f, alargada.normBottom, 0.001f)
+
+        // Impede inversão ao cruzar o lado oposto
+        val minima = ajustarCantoCaixaAuditavel(box, AlcaCaixa.CANTO_SE, novoNormX = 0.90f, novoNormY = 0.90f, minDim = 0.05f)
+        assertEquals(0.55f, minima.normLeft, 0.001f)
+        assertEquals(0.55f, minima.normTop, 0.001f)
+        assertEquals(0.05f, minima.largura, 0.001f)
     }
 }

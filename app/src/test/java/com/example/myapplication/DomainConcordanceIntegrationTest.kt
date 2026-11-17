@@ -145,4 +145,42 @@ class DomainConcordanceIntegrationTest {
         assertTrue(linhas[2].contains("GEN-01,1,2,Sem Frutos,,0,,11.0"))
         assertTrue(linhas[3].contains("GEN-01,1,3,Não avaliável,Cavalo,0,,,2026-11-15 14:22:00"))
     }
+
+    @Test
+    fun `exportacao CSV multi-classe inclui colunas automaticas IA_classe para modelos generalistas`() {
+        val regFrutas = RegistroColeta(
+            uri = Uri.EMPTY ?: Mockito.mock(Uri::class.java),
+            idCompleto = "Pomar_T1_P1_1",
+            coletaNome = "Pomar_2026",
+            tratamento = "POMAR-A",
+            parcela = "1",
+            planta = "1",
+            situacaoPlanta = SituacaoPlanta.NORMAL,
+            diagnostico = "3 (Maçã: 2, Banana: 1)",
+            data = "2026-11-16 09:00:00",
+            lat = -14.79,
+            lng = -39.23,
+            totalObjetos = 3,
+            variaveisExtras = emptyMap(),
+            caixas = listOf(
+                CaixaAuditavel(0.1f, 0.1f, 0.3f, 0.3f, rotulo = "apple", manual = false, confianca = 0.91f),
+                CaixaAuditavel(0.4f, 0.1f, 0.6f, 0.3f, rotulo = "apple", manual = false, confianca = 0.88f),
+                CaixaAuditavel(0.1f, 0.5f, 0.4f, 0.8f, rotulo = "banana", manual = false, confianca = 0.85f)
+            )
+        )
+
+        val csv = gerarConteudoCsvBreedAI(
+            registros = listOf(regFrutas),
+            labelTratamento = "Cultivar",
+            labelParcela = "Bloco",
+            labelPlanta = "Planta",
+            variaveisAtivas = emptyList(),
+            classesModeloExportacao = listOf("apple", "banana", "orange")
+        )
+
+        val linhas = csv.trim().lines()
+        assertEquals(2, linhas.size)
+        assertTrue(linhas[0].contains("IA_apple,IA_banana,IA_orange"))
+        assertTrue(linhas[1].contains("POMAR-A,1,1,Normal,,3,2,1,0,2026-11-16 09:00:00"))
+    }
 }

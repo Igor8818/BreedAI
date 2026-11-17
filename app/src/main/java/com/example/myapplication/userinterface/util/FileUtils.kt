@@ -52,8 +52,14 @@ internal fun gerarConteudoCsvBreedAI(
     labelTratamento: String,
     labelParcela: String,
     labelPlanta: String,
-    variaveisAtivas: List<VariavelExtra>
+    variaveisAtivas: List<VariavelExtra>,
+    classesModeloExportacao: List<String> = emptyList()
 ): String = buildString {
+    val classesValidas = classesModeloExportacao
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase() }
+
     val colunasFixasInicio = listOf(
         "Coleta",
         "ID_Planta",
@@ -65,9 +71,10 @@ internal fun gerarConteudoCsvBreedAI(
         "Total_Contado"
     )
     val colunasVariaveis = variaveisAtivas.map { it.nome }
+    val colunasClassesIA = classesValidas.map { "IA_$it" }
     val colunasFixasFim = listOf("Data_Hora", "Latitude", "Longitude", "Deteccoes_IA")
 
-    val header = (colunasFixasInicio + colunasVariaveis + colunasFixasFim)
+    val header = (colunasFixasInicio + colunasVariaveis + colunasClassesIA + colunasFixasFim)
         .joinToString(",") { csvField(it) }
     appendLine(header)
 
@@ -84,9 +91,12 @@ internal fun gerarConteudoCsvBreedAI(
             reg.totalObjetos
         )
         val valoresVariaveis = variaveisAtivas.map { v -> reg.variaveisExtras[v.nome] ?: "" }
+        val valoresClassesIA = classesValidas.map { cls ->
+            reg.caixas.count { c -> c.rotulo.equals(cls, ignoreCase = true) }
+        }
         val valoresFixosFim = listOf(reg.data, reg.lat, reg.lng, detJson)
 
-        val linha = (valoresFixosInicio + valoresVariaveis + valoresFixosFim)
+        val linha = (valoresFixosInicio + valoresVariaveis + valoresClassesIA + valoresFixosFim)
             .joinToString(",") { csvField(it) }
         appendLine(linha)
     }
@@ -99,7 +109,8 @@ fun exportarCSVBreedAI(
     labelTratamento: String,
     labelParcela: String,
     labelPlanta: String,
-    variaveisAtivas: List<VariavelExtra>
+    variaveisAtivas: List<VariavelExtra>,
+    classesModeloExportacao: List<String> = emptyList()
 ): File? {
     val coletaSafe = coletaNome.ifBlank { "Coleta" }.replace(Regex("[^a-zA-Z0-9._-]"), "_")
     val nomeFinal = "BreedAI_${coletaSafe}_${System.currentTimeMillis()}.csv"
@@ -108,7 +119,8 @@ fun exportarCSVBreedAI(
         labelTratamento = labelTratamento,
         labelParcela = labelParcela,
         labelPlanta = labelPlanta,
-        variaveisAtivas = variaveisAtivas
+        variaveisAtivas = variaveisAtivas,
+        classesModeloExportacao = classesModeloExportacao
     )
     val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
     val payload = bom + conteudo.toByteArray(StandardCharsets.UTF_8)

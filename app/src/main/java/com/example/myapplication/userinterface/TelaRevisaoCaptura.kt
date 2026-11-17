@@ -8,7 +8,12 @@ import android.media.ExifInterface
 import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -20,11 +25,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -36,6 +46,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.task.vision.detector.Detection
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.hypot
 
 private val PALETA_CLASSES = listOf(
     Color(0xFF00897B),
@@ -53,6 +65,9 @@ internal fun rotuloAmigavel(label: String): String {
         "moniliase", "monilíase" -> "Monilíase"
         "vassourabruxa", "vassoura de bruxa", "vassoura" -> "Vassoura"
         "sadio" -> "Sadio"
+        "apple" -> "Maçã"
+        "banana" -> "Banana"
+        "orange" -> "Laranja"
         "" -> "Objeto"
         else -> limpo
     }
@@ -162,8 +177,8 @@ internal fun selecionarIndiceCaixaNoToque(
 internal fun redimensionarCaixaAuditavel(
     caixa: CaixaAuditavel,
     fatorEscala: Float,
-    minDim: Float = 0.03f,
-    maxDim: Float = 0.70f
+    minDim: Float = 0.025f,
+    maxDim: Float = 0.95f
 ): CaixaAuditavel {
     val cx = caixa.centroX
     val cy = caixa.centroY
@@ -184,6 +199,88 @@ internal fun redimensionarCaixaAuditavel(
         normRight = nR,
         normBottom = nB
     )
+}
+
+internal enum class AlcaCaixa {
+    NENHUMA,
+    CORPO,
+    CANTO_SE,
+    CANTO_SD,
+    CANTO_IE,
+    CANTO_ID
+}
+
+internal fun detectarAlcaCaixaSelecionada(
+    caixa: CaixaAuditavel,
+    normX: Float,
+    normY: Float,
+    raioNormX: Float,
+    raioNormY: Float
+): AlcaCaixa {
+    val rx = raioNormX.coerceAtLeast(0.001f).toDouble()
+    val ry = raioNormY.coerceAtLeast(0.001f).toDouble()
+    val cantos = listOf(
+        AlcaCaixa.CANTO_SE to hypot((normX - caixa.normLeft) / rx, (normY - caixa.normTop) / ry),
+        AlcaCaixa.CANTO_SD to hypot((normX - caixa.normRight) / rx, (normY - caixa.normTop) / ry),
+        AlcaCaixa.CANTO_IE to hypot((normX - caixa.normLeft) / rx, (normY - caixa.normBottom) / ry),
+        AlcaCaixa.CANTO_ID to hypot((normX - caixa.normRight) / rx, (normY - caixa.normBottom) / ry)
+    )
+    val cantoMaisProximo = cantos.filter { it.second <= 1.25 }.minByOrNull { it.second }
+    if (cantoMaisProximo != null) return cantoMaisProximo.first
+
+    if (normX in (caixa.normLeft - raioNormX * 0.35f)..(caixa.normRight + raioNormX * 0.35f) &&
+        normY in (caixa.normTop - raioNormY * 0.35f)..(caixa.normBottom + raioNormY * 0.35f)
+    ) {
+        return AlcaCaixa.CORPO
+    }
+    return AlcaCaixa.NENHUMA
+}
+
+internal fun moverCaixaAuditavel(
+    caixa: CaixaAuditavel,
+    deltaNormX: Float,
+    deltaNormY: Float
+): CaixaAuditavel {
+    val w = caixa.largura.coerceIn(0.02f, 1f)
+    val h = caixa.altura.coerceIn(0.02f, 1f)
+    val novoL = (caixa.normLeft + deltaNormX).coerceIn(0f, 1f - w)
+    val novoT = (caixa.normTop + deltaNormY).coerceIn(0f, 1f - h)
+    return caixa.copy(
+        normLeft = novoL,
+        normTop = novoT,
+        normRight = (novoL + w).coerceIn(0f, 1f),
+        normBottom = (novoT + h).coerceIn(0f, 1f)
+    )
+}
+
+internal fun ajustarCantoCaixaAuditavel(
+    caixa: CaixaAuditavel,
+    alca: AlcaCaixa,
+    novoNormX: Float,
+    novoNormY: Float,
+    minDim: Float = 0.03f
+): CaixaAuditavel {
+    val x = novoNormX.coerceIn(0f, 1f)
+    val y = novoNormY.coerceIn(0f, 1f)
+    return when (alca) {
+        AlcaCaixa.CANTO_SE -> caixa.copy(
+            normLeft = x.coerceAtMost(caixa.normRight - minDim).coerceAtLeast(0f),
+            normTop = y.coerceAtMost(caixa.normBottom - minDim).coerceAtLeast(0f)
+        )
+        AlcaCaixa.CANTO_SD -> caixa.copy(
+            normRight = x.coerceAtLeast(caixa.normLeft + minDim).coerceAtMost(1f),
+            normTop = y.coerceAtMost(caixa.normBottom - minDim).coerceAtLeast(0f)
+        )
+        AlcaCaixa.CANTO_IE -> caixa.copy(
+            normLeft = x.coerceAtMost(caixa.normRight - minDim).coerceAtLeast(0f),
+            normBottom = y.coerceAtLeast(caixa.normTop + minDim).coerceAtMost(1f)
+        )
+        AlcaCaixa.CANTO_ID -> caixa.copy(
+            normRight = x.coerceAtLeast(caixa.normLeft + minDim).coerceAtMost(1f),
+            normBottom = y.coerceAtLeast(caixa.normTop + minDim).coerceAtMost(1f)
+        )
+        else -> caixa
+    }
 }
 
 data class DetEstilizada(
@@ -277,7 +374,7 @@ internal fun fundirDeteccoesComSnapping(
 internal fun fundirContagemEDiagnosticoBreedAI(
     caixasContagem: List<DetEstilizada>,
     deteccoesSecundarias: List<DetEstilizada>,
-    iouMinimo: Float = 0.30f
+    iouMinimo: Float = 0.20f
 ): List<DetEstilizada> {
     if (deteccoesSecundarias.isEmpty()) return caixasContagem
     if (caixasContagem.isEmpty()) return deteccoesSecundarias
@@ -288,6 +385,9 @@ internal fun fundirContagemEDiagnosticoBreedAI(
     for (base in caixasContagem) {
         var melhorIdx = -1
         var melhorScore = -1f
+        val cxBase = (base.normLeft + base.normRight) / 2f
+        val cyBase = (base.normTop + base.normBottom) / 2f
+        val maxDimBase = maxOf(base.normRight - base.normLeft, base.normBottom - base.normTop).coerceAtLeast(0.05f)
 
         for (i in deteccoesSecundarias.indices) {
             val sec = deteccoesSecundarias[i]
@@ -299,9 +399,11 @@ internal fun fundirContagemEDiagnosticoBreedAI(
             val cySec = (sec.normTop + sec.normBottom) / 2f
             val centroDentro = cxSec in base.normLeft..base.normRight &&
                     cySec in base.normTop..base.normBottom
+            val distCentros = kotlin.math.hypot((cxSec - cxBase).toDouble(), (cySec - cyBase).toDouble()).toFloat()
+            val proximoPorCentro = distCentros <= 0.35f * maxDimBase
 
-            if (iou >= iouMinimo || centroDentro) {
-                val pontuacao = iou + if (centroDentro) 0.15f else 0f
+            if (iou >= iouMinimo || centroDentro || proximoPorCentro) {
+                val pontuacao = iou + (if (centroDentro) 0.15f else 0f) + (if (proximoPorCentro) 0.08f else 0f)
                 if (pontuacao > melhorScore) {
                     melhorScore = pontuacao
                     melhorIdx = i
@@ -360,20 +462,47 @@ fun TelaRevisaoCaptura(
     labelsFiltro: List<String> = emptyList(),
     caixasAuditadasIniciais: List<CaixaAuditavel>? = null,
     modoSemFrutos: Boolean = false,
+    classificacoesPersonalizadas: List<String>? = null,
+    onAtualizarClassificacoes: ((List<String>) -> Unit)? = null,
     onConfirmar: (totalObjetos: Int, caixas: List<CaixaAuditavel>) -> Unit,
     onRefazer: () -> Unit
 ) {
     val context = LocalContext.current
-    val classesDisponiveis = remember(labelsFiltro) {
-        val especificas = labelsFiltro.filter { !isRotuloGenerico(it) }
-        if (especificas.size > 1) especificas else labelsFiltro
+    val classesIniciais = remember(
+        classificacoesPersonalizadas,
+        labelsFiltro,
+        detectorHelper,
+        detectorSecundarioHelper
+    ) {
+        if (!classificacoesPersonalizadas.isNullOrEmpty()) {
+            classificacoesPersonalizadas
+        } else {
+            val doPrimario = detectorHelper?.obterLabelsModelo()
+                ?.filter { it != "???" && it.isNotBlank() }
+                ?.takeIf { it.size in 2..15 }
+                ?: emptyList()
+            val doSecundario = detectorSecundarioHelper?.obterLabelsModelo()
+                ?.filter { it != "???" && it.isNotBlank() }
+                ?.takeIf { it.size in 2..15 }
+                ?: emptyList()
+            val combinadas = (labelsFiltro + doPrimario + doSecundario)
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+                .distinctBy { it.lowercase(Locale.ROOT) }
+            val especificas = combinadas.filter { !isRotuloGenerico(it) }
+            if (especificas.isNotEmpty()) especificas else combinadas
+        }
     }
-    val rotuloPadrao = remember(classesDisponiveis) {
+    val classesDisponiveis = remember(classesIniciais) {
+        mutableStateListOf<String>().apply { addAll(classesIniciais) }
+    }
+    val rotuloPadrao = remember(classesDisponiveis.toList()) {
         classesDisponiveis.firstOrNull { it.equals("Sadio", ignoreCase = true) }
             ?: classesDisponiveis.firstOrNull()?.takeIf { it.isNotBlank() }
             ?: "Objeto"
     }
     var classeParaAdicionar by remember(rotuloPadrao) { mutableStateOf(rotuloPadrao) }
+    var mostrarDialogNovaClassificacao by remember { mutableStateOf(false) }
 
     val caixas = remember(fotoUri, modoSemFrutos) {
         mutableStateListOf<CaixaAuditavel>().apply {
@@ -457,12 +586,24 @@ fun TelaRevisaoCaptura(
                     val bmpH = bmp.height.toFloat()
 
                     val candidatasContagem = mutableListOf<DetEstilizada>()
+                    val labelsDoModelo = helper.obterLabelsModelo().filter { it != "???" && it.isNotBlank() }
+                    val filtroCasaComModelo = labelsFiltro.isNotEmpty() &&
+                            labelsDoModelo.isNotEmpty() &&
+                            labelsFiltro.any { f ->
+                                labelsDoModelo.any { m -> m.contains(f, ignoreCase = true) || f.contains(m, ignoreCase = true) }
+                            }
                     res.deteccoes.forEach { det ->
                         val cat = det.categories.firstOrNull()
                         val label = (cat?.label ?: rotuloPadrao).lowercase(Locale.ROOT)
-                        val labelValido = labelsFiltro.isEmpty() ||
-                                labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) } ||
-                                label == "cacau" || label == "fruto" || label == "objeto"
+                        val labelValido = when {
+                            labelsFiltro.isEmpty() -> true
+                            filtroCasaComModelo -> labelsFiltro.any { f ->
+                                label.equals(f, ignoreCase = true) || label.contains(f.lowercase(Locale.ROOT))
+                            } || label == "objeto" || (detectorSecundarioHelper != null && label in setOf("cacau", "fruto"))
+                            else -> labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) } ||
+                                    labelsDoModelo.any { m -> label.equals(m, ignoreCase = true) } ||
+                                    label == "cacau" || label == "fruto" || label == "objeto"
+                        }
                         if (!labelValido) return@forEach
 
                         val r = det.boundingBox
@@ -492,7 +633,22 @@ fun TelaRevisaoCaptura(
                                 rotulo = cat.label.takeIf { it.isNotBlank() } ?: rotuloPadrao
                             )
                         } ?: emptyList()
-                        fundirContagemEDiagnosticoBreedAI(candidatasContagem, detsSec)
+                        fundirContagemEDiagnosticoBreedAI(candidatasContagem, detsSec).map { detEst ->
+                            if (isRotuloGenerico(detEst.rotulo)) {
+                                val classCrop = ObjectDetectorHelper.classificarRecorteDoencaCacau(
+                                    bmp,
+                                    android.graphics.RectF(
+                                        detEst.normLeft * bmpW,
+                                        detEst.normTop * bmpH,
+                                        detEst.normRight * bmpW,
+                                        detEst.normBottom * bmpH
+                                    )
+                                )
+                                detEst.copy(rotulo = classCrop)
+                            } else {
+                                detEst
+                            }
+                        }
                     } else {
                         candidatasContagem
                     }
@@ -533,19 +689,213 @@ fun TelaRevisaoCaptura(
         }
     }
 
+    var zoomScale by remember(fotoUri) { mutableFloatStateOf(1f) }
+    var panOffset by remember(fotoUri) { mutableStateOf(Offset.Zero) }
+    var pinchModoFoto by remember(fotoUri) { mutableStateOf(false) }
+
+    LaunchedEffect(indiceSelecionado) {
+        if (indiceSelecionado < 0) {
+            pinchModoFoto = false
+        }
+    }
+
+    val modoSemFrutosAtual by rememberUpdatedState(modoSemFrutos)
+    val classesAtual by rememberUpdatedState(classesDisponiveis.toList())
+    val classeAddAtual by rememberUpdatedState(classeParaAdicionar)
+    val indiceSelState = rememberUpdatedState(indiceSelecionado)
+    val pinchFotoState = rememberUpdatedState(pinchModoFoto)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        AsyncImage(
-            model = fotoUri,
-            contentDescription = "Foto da planta $plantId",
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Fit
-        )
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .clipToBounds()
+                .pointerInput(fotoUri) {
+                    val canvasW = size.width.toFloat().coerceAtLeast(1f)
+                    val canvasH = size.height.toFloat().coerceAtLeast(1f)
+                    val containerAspect = canvasW / canvasH
+                    val displayedW: Float
+                    val displayedH: Float
+                    if (containerAspect > imgAspect) {
+                        displayedH = canvasH
+                        displayedW = displayedH * imgAspect
+                    } else {
+                        displayedW = canvasW
+                        displayedH = displayedW / imgAspect
+                    }
+                    val offsetX = (canvasW - displayedW) / 2f
+                    val offsetY = (canvasH - displayedH) / 2f
+                    val screenCenter = Offset(canvasW / 2f, canvasH / 2f)
 
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    fun clampPan(pan: Offset, scale: Float): Offset {
+                        if (scale <= 1.01f) return Offset.Zero
+                        val maxX = (canvasW * (scale - 1f)) / 2f
+                        val maxY = (canvasH * (scale - 1f)) / 2f
+                        return Offset(pan.x.coerceIn(-maxX, maxX), pan.y.coerceIn(-maxY, maxY))
+                    }
+
+                    fun screenToNorm(pt: Offset): Offset {
+                        val s = zoomScale
+                        val p = panOffset
+                        val canvasX = screenCenter.x + (pt.x - screenCenter.x - p.x) / s
+                        val canvasY = screenCenter.y + (pt.y - screenCenter.y - p.y) / s
+                        return Offset((canvasX - offsetX) / displayedW, (canvasY - offsetY) / displayedH)
+                    }
+
+                    awaitEachGesture {
+                        val firstDown = awaitFirstDown(requireUnconsumed = false)
+                        if (modoSemFrutosAtual) return@awaitEachGesture
+
+                        val startScreen = firstDown.position
+                        val startNorm = screenToNorm(startScreen)
+                        val margemNormX = (24.dp.toPx() / (displayedW * zoomScale)).coerceAtLeast(0.01f)
+                        val margemNormY = (24.dp.toPx() / (displayedH * zoomScale)).coerceAtLeast(0.01f)
+
+                        var activeAlca = AlcaCaixa.NENHUMA
+                        var dragIdx = -1
+                        val selAtual = indiceSelState.value
+                        if (selAtual in caixas.indices) {
+                            val alcaSel = detectarAlcaCaixaSelecionada(
+                                caixas[selAtual], startNorm.x, startNorm.y, margemNormX, margemNormY
+                            )
+                            if (alcaSel != AlcaCaixa.NENHUMA) {
+                                activeAlca = alcaSel
+                                dragIdx = selAtual
+                            }
+                        }
+                        if (dragIdx < 0) {
+                            val hit = selecionarIndiceCaixaNoToque(
+                                caixas = caixas,
+                                normTapX = startNorm.x,
+                                normTapY = startNorm.y,
+                                margemNormX = margemNormX,
+                                margemNormY = margemNormY
+                            )
+                            if (hit >= 0) {
+                                dragIdx = hit
+                                activeAlca = AlcaCaixa.CORPO
+                            }
+                        }
+
+                        var isMultiTouch = false
+                        var movedPastSlop = false
+                        var prevSinglePos = startScreen
+                        val touchSlop = viewConfiguration.touchSlop
+
+                        do {
+                            val event = awaitPointerEvent()
+                            val pressedCount = event.changes.count { it.pressed }
+                            if (pressedCount >= 2) {
+                                isMultiTouch = true
+                                movedPastSlop = true
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                val curSel = indiceSelState.value
+
+                                if (curSel in caixas.indices && !pinchFotoState.value) {
+                                    var boxAtual = caixas[curSel]
+                                    if (abs(zoomChange - 1f) > 0.001f) {
+                                        boxAtual = redimensionarCaixaAuditavel(
+                                            boxAtual, zoomChange, minDim = 0.025f, maxDim = 0.95f
+                                        )
+                                    }
+                                    if (panChange != Offset.Zero) {
+                                        val dxNorm = panChange.x / (displayedW * zoomScale)
+                                        val dyNorm = panChange.y / (displayedH * zoomScale)
+                                        boxAtual = moverCaixaAuditavel(boxAtual, dxNorm, dyNorm)
+                                    }
+                                    caixas[curSel] = boxAtual
+                                } else {
+                                    val oldScale = zoomScale
+                                    val newScale = (oldScale * zoomChange).coerceIn(1f, 5f)
+                                    val ratio = newScale / oldScale
+                                    val rawNewPan = centroid + panChange - screenCenter -
+                                            (centroid - screenCenter - panOffset) * ratio
+                                    zoomScale = newScale
+                                    panOffset = clampPan(rawNewPan, newScale)
+                                }
+                                event.changes.forEach { if (it.positionChanged()) it.consume() }
+                            } else if (pressedCount == 1 && !isMultiTouch) {
+                                val ch = event.changes.first()
+                                val curPos = ch.position
+                                if (!movedPastSlop && (curPos - startScreen).getDistance() > touchSlop) {
+                                    movedPastSlop = true
+                                }
+                                if (movedPastSlop) {
+                                    if (dragIdx in caixas.indices) {
+                                        if (indiceSelState.value != dragIdx) {
+                                            indiceSelecionado = dragIdx
+                                        }
+                                        if (activeAlca == AlcaCaixa.CORPO) {
+                                            val delta = curPos - prevSinglePos
+                                            val dxNorm = delta.x / (displayedW * zoomScale)
+                                            val dyNorm = delta.y / (displayedH * zoomScale)
+                                            caixas[dragIdx] = moverCaixaAuditavel(caixas[dragIdx], dxNorm, dyNorm)
+                                        } else if (activeAlca != AlcaCaixa.NENHUMA) {
+                                            val normCur = screenToNorm(curPos)
+                                            caixas[dragIdx] = ajustarCantoCaixaAuditavel(
+                                                caixas[dragIdx], activeAlca, normCur.x, normCur.y
+                                            )
+                                        }
+                                        ch.consume()
+                                    } else if (zoomScale > 1.02f) {
+                                        val delta = curPos - prevSinglePos
+                                        panOffset = clampPan(panOffset + delta, zoomScale)
+                                        ch.consume()
+                                    }
+                                }
+                                prevSinglePos = curPos
+                            }
+                        } while (event.changes.any { it.pressed })
+
+                        if (!isMultiTouch && !movedPastSlop) {
+                            if (startNorm.x in 0f..1f && startNorm.y in 0f..1f) {
+                                val hitTap = selecionarIndiceCaixaNoToque(
+                                    caixas = caixas,
+                                    normTapX = startNorm.x,
+                                    normTapY = startNorm.y,
+                                    margemNormX = margemNormX,
+                                    margemNormY = margemNormY
+                                )
+                                if (hitTap >= 0) {
+                                    if (classesAtual.size > 1) {
+                                        val atual = caixas[hitTap]
+                                        val novoRotulo = if (atual.rotulo.equals(classeAddAtual, ignoreCase = true)) {
+                                            val curIdx = classesAtual.indexOfFirst { it.equals(atual.rotulo, ignoreCase = true) }
+                                            classesAtual[((curIdx + 1).coerceAtLeast(0)) % classesAtual.size]
+                                        } else {
+                                            classeAddAtual
+                                        }
+                                        caixas[hitTap] = atual.copy(rotulo = novoRotulo)
+                                    }
+                                    indiceSelecionado = hitTap
+                                } else if (indiceSelState.value >= 0) {
+                                    indiceSelecionado = -1
+                                } else {
+                                    val halfW = 0.07f
+                                    val halfH = 0.07f
+                                    val nova = CaixaAuditavel(
+                                        normLeft = (startNorm.x - halfW).coerceIn(0f, 1f - halfW * 2),
+                                        normTop = (startNorm.y - halfH).coerceIn(0f, 1f - halfH * 2),
+                                        normRight = (startNorm.x + halfW).coerceIn(halfW * 2, 1f),
+                                        normBottom = (startNorm.y + halfH).coerceIn(halfH * 2, 1f),
+                                        rotulo = classeAddAtual,
+                                        manual = true,
+                                        confianca = 1.0f
+                                    )
+                                    caixas.add(nova)
+                                    indiceSelecionado = caixas.lastIndex
+                                }
+                            }
+                        }
+                    }
+                }
+        ) {
             val canvasW = constraints.maxWidth.toFloat()
             val canvasH = constraints.maxHeight.toFloat()
             val containerAspect = canvasW / canvasH.coerceAtLeast(1f)
@@ -562,159 +912,200 @@ fun TelaRevisaoCaptura(
             val offsetX = (canvasW - displayedW) / 2f
             val offsetY = (canvasH - displayedH) / 2f
 
-            Canvas(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(fotoUri, caixas.size, modoSemFrutos, classesDisponiveis) {
-                        detectTapGestures { tapOffset ->
-                            if (modoSemFrutos) return@detectTapGestures
-                            val normTapX = (tapOffset.x - offsetX) / displayedW
-                            val normTapY = (tapOffset.y - offsetY) / displayedH
-
-                            if (normTapX in 0f..1f && normTapY in 0f..1f) {
-                                val margemNormX = 24.dp.toPx() / displayedW
-                                val margemNormY = 24.dp.toPx() / displayedH
-
-                                val idxTocado = selecionarIndiceCaixaNoToque(
-                                    caixas = caixas,
-                                    normTapX = normTapX,
-                                    normTapY = normTapY,
-                                    margemNormX = margemNormX,
-                                    margemNormY = margemNormY
-                                )
-
-                                if (idxTocado >= 0) {
-                                    if (classesDisponiveis.size > 1) {
-                                        val atual = caixas[idxTocado]
-                                        val novoRotulo = if (atual.rotulo.equals(classeParaAdicionar, ignoreCase = true)) {
-                                            val curIdx = classesDisponiveis.indexOfFirst { it.equals(atual.rotulo, ignoreCase = true) }
-                                            classesDisponiveis[((curIdx + 1).coerceAtLeast(0)) % classesDisponiveis.size]
-                                        } else {
-                                            classeParaAdicionar
-                                        }
-                                        caixas[idxTocado] = atual.copy(rotulo = novoRotulo)
-                                    }
-                                    indiceSelecionado = idxTocado
-                                } else if (indiceSelecionado >= 0) {
-                                    indiceSelecionado = -1
-                                } else {
-                                    val halfW = 0.07f
-                                    val halfH = 0.07f
-                                    val nova = CaixaAuditavel(
-                                        normLeft = (normTapX - halfW).coerceIn(0f, 1f - halfW * 2),
-                                        normTop = (normTapY - halfH).coerceIn(0f, 1f - halfH * 2),
-                                        normRight = (normTapX + halfW).coerceIn(halfW * 2, 1f),
-                                        normBottom = (normTapY + halfH).coerceIn(halfH * 2, 1f),
-                                        rotulo = classeParaAdicionar,
-                                        manual = true,
-                                        confianca = 1.0f
-                                    )
-                                    caixas.add(nova)
-                                    indiceSelecionado = caixas.lastIndex
-                                }
-                            }
-                        }
+                    .graphicsLayer {
+                        scaleX = zoomScale
+                        scaleY = zoomScale
+                        translationX = panOffset.x
+                        translationY = panOffset.y
+                        transformOrigin = TransformOrigin.Center
                     }
             ) {
-                caixas.forEachIndexed { idx, caixa ->
-                    val bLeft = offsetX + caixa.normLeft * displayedW
-                    val bTop = offsetY + caixa.normTop * displayedH
-                    val bW = (caixa.normRight - caixa.normLeft) * displayedW
-                    val bH = (caixa.normBottom - caixa.normTop) * displayedH
-                    val selecionada = idx == indiceSelecionado
-                    val cor = corParaCaixa(caixa.rotulo, caixa.manual, labelsFiltro)
+                AsyncImage(
+                    model = fotoUri,
+                    contentDescription = "Foto da planta $plantId",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
 
-                    drawRect(
-                        color = cor,
-                        topLeft = androidx.compose.ui.geometry.Offset(bLeft, bTop),
-                        size = androidx.compose.ui.geometry.Size(bW, bH),
-                        style = Stroke(width = if (selecionada) 5.dp.toPx() else 3.dp.toPx())
-                    )
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val invZoom = 1f / zoomScale.coerceAtLeast(1f)
+                    caixas.forEachIndexed { idx, caixa ->
+                        val bLeft = offsetX + caixa.normLeft * displayedW
+                        val bTop = offsetY + caixa.normTop * displayedH
+                        val bW = (caixa.normRight - caixa.normLeft) * displayedW
+                        val bH = (caixa.normBottom - caixa.normTop) * displayedH
+                        val selecionada = idx == indiceSelecionado
+                        val cor = corParaCaixa(caixa.rotulo, caixa.manual, labelsFiltro)
 
-                    if (selecionada) {
                         drawRect(
-                            color = Color.White,
-                            topLeft = androidx.compose.ui.geometry.Offset(bLeft - 2.dp.toPx(), bTop - 2.dp.toPx()),
-                            size = androidx.compose.ui.geometry.Size(bW + 4.dp.toPx(), bH + 4.dp.toPx()),
-                            style = Stroke(width = 2.dp.toPx())
+                            color = cor,
+                            topLeft = Offset(bLeft, bTop),
+                            size = androidx.compose.ui.geometry.Size(bW, bH),
+                            style = Stroke(width = (if (selecionada) 4.5.dp.toPx() else 3.dp.toPx()) * invZoom)
+                        )
+
+                        if (selecionada) {
+                            val pad = 2.dp.toPx() * invZoom
+                            drawRect(
+                                color = Color.White,
+                                topLeft = Offset(bLeft - pad, bTop - pad),
+                                size = androidx.compose.ui.geometry.Size(bW + pad * 2f, bH + pad * 2f),
+                                style = Stroke(width = 1.8.dp.toPx() * invZoom)
+                            )
+                            val handleR = 6.5.dp.toPx() * invZoom
+                            val corners = listOf(
+                                Offset(bLeft, bTop),
+                                Offset(bLeft + bW, bTop),
+                                Offset(bLeft, bTop + bH),
+                                Offset(bLeft + bW, bTop + bH)
+                            )
+                            corners.forEach { corner ->
+                                drawCircle(color = Color.White, radius = handleR, center = corner)
+                                drawCircle(
+                                    color = cor,
+                                    radius = handleR,
+                                    center = corner,
+                                    style = Stroke(width = 2.dp.toPx() * invZoom)
+                                )
+                            }
+                        }
+
+                        val labelTxt = if (classesDisponiveis.size > 1 || !isRotuloGenerico(caixa.rotulo)) {
+                            "#${idx + 1} ${rotuloAmigavel(caixa.rotulo)}"
+                        } else if (caixa.manual) {
+                            "#${idx + 1} (Manual)"
+                        } else {
+                            "#${idx + 1}"
+                        }
+                        val textWidth = textPaint.measureText(labelTxt)
+                        val badgeHeight = 32f
+
+                        badgePaint.color = cor.toArgb()
+                        drawContext.canvas.nativeCanvas.drawRoundRect(
+                            bLeft,
+                            (bTop - badgeHeight - 4f).coerceAtLeast(0f),
+                            bLeft + textWidth + 16f,
+                            bTop,
+                            8f, 8f,
+                            badgePaint
+                        )
+                        drawContext.canvas.nativeCanvas.drawText(
+                            labelTxt,
+                            bLeft + 8f,
+                            (bTop - 8f).coerceAtLeast(20f),
+                            textPaint
                         )
                     }
-
-                    val labelTxt = if (classesDisponiveis.size > 1 || !isRotuloGenerico(caixa.rotulo)) {
-                        "#${idx + 1} ${rotuloAmigavel(caixa.rotulo)}"
-                    } else if (caixa.manual) {
-                        "#${idx + 1} (Manual)"
-                    } else {
-                        "#${idx + 1}"
-                    }
-                    val textWidth = textPaint.measureText(labelTxt)
-                    val badgeHeight = 32f
-
-                    badgePaint.color = cor.toArgb()
-                    drawContext.canvas.nativeCanvas.drawRoundRect(
-                        bLeft,
-                        (bTop - badgeHeight - 4f).coerceAtLeast(0f),
-                        bLeft + textWidth + 16f,
-                        bTop,
-                        8f, 8f,
-                        badgePaint
-                    )
-                    drawContext.canvas.nativeCanvas.drawText(
-                        labelTxt,
-                        bLeft + 8f,
-                        (bTop - 8f).coerceAtLeast(20f),
-                        textPaint
-                    )
                 }
             }
         }
 
-        // Cabeçalho superior compacto
-        Surface(
+        // Cabeçalho superior compacto + Controles flutuantes de zoom
+        Column(
             modifier = Modifier
                 .statusBarsPadding()
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp, vertical = 4.dp),
-            color = Color.Black.copy(alpha = 0.78f),
-            shape = RoundedCornerShape(14.dp)
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = Color.Black.copy(alpha = 0.78f),
+                shape = RoundedCornerShape(14.dp)
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(plantId, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text(
-                        if (modoSemFrutos) "Foto de comprovação (Sem Frutos)"
-                        else "Toque no quadrado p/ ajustar/excluir ou no fundo p/ +",
-                        color = Color(0xFFB0BEC5),
-                        fontSize = 10.sp
-                    )
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = when {
-                        modoSemFrutos -> Color(0xFFEF6C00)
-                        analisandoFotoEstatica -> Color(0xFF1565C0)
-                        else -> Color(0xFF2E7D32)
-                    }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        when {
-                            modoSemFrutos -> "SEM FRUTOS (0)"
-                            analisandoFotoEstatica -> "Analisando IA..."
-                            else -> "$totalObjetos Contados"
-                        },
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(plantId, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text(
+                            if (modoSemFrutos) "Foto de comprovação (Sem Frutos)"
+                            else "Toque p/ adicionar • Arraste caixa/cantos • Pinça p/ ampliar",
+                            color = Color(0xFFB0BEC5),
+                            fontSize = 10.sp
+                        )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = when {
+                            modoSemFrutos -> Color(0xFFEF6C00)
+                            analisandoFotoEstatica -> Color(0xFF1565C0)
+                            else -> Color(0xFF2E7D32)
+                        }
+                    ) {
+                        Text(
+                            when {
+                                modoSemFrutos -> "SEM FRUTOS (0)"
+                                analisandoFotoEstatica -> "Analisando IA..."
+                                else -> "$totalObjetos Contados"
+                            },
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            if (zoomScale > 1.05f || (indiceSelecionado in caixas.indices && !modoSemFrutos)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (zoomScale > 1.05f) {
+                        Surface(
+                            onClick = {
+                                zoomScale = 1f
+                                panOffset = Offset.Zero
+                            },
+                            shape = RoundedCornerShape(20.dp),
+                            color = Color.Black.copy(alpha = 0.78f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E676))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(Icons.Default.ZoomOutMap, null, tint = Color(0xFF00E676), modifier = Modifier.size(14.dp))
+                                Text(
+                                    "Zoom ${"%.1f".format(zoomScale)}x • Resetar",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    }
+                    if (indiceSelecionado in caixas.indices && !modoSemFrutos) {
+                        Surface(
+                            onClick = { pinchModoFoto = !pinchModoFoto },
+                            shape = RoundedCornerShape(20.dp),
+                            color = Color.Black.copy(alpha = 0.78f),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                if (pinchModoFoto) Color(0xFF64B5F6) else Color(0xFFFFD54F)
+                            )
+                        ) {
+                            Text(
+                                if (pinchModoFoto) "Pinça (2 dedos): Zoom na Foto" else "Pinça (2 dedos): Tamanho da Caixa",
+                                color = if (pinchModoFoto) Color(0xFF90CAF9) else Color(0xFFFFE082),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -743,12 +1134,19 @@ fun TelaRevisaoCaptura(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                "Objeto #${indiceSelecionado + 1}${if (caixaAtual.manual) " (Manual)" else ""}",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Objeto #${indiceSelecionado + 1}${if (caixaAtual.manual) " (Manual)" else ""}",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                                Text(
+                                    "Arraste p/ mover • Cantos ou pinça p/ tamanho",
+                                    color = Color(0xFFA5D6A7),
+                                    fontSize = 10.sp
+                                )
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -797,30 +1195,31 @@ fun TelaRevisaoCaptura(
                             }
                         }
 
-                        // Se o modelo carregado tiver múltiplas classes configuradas, exibe troca de rótulo dinâmica
-                        if (classesDisponiveis.size > 1) {
-                            Spacer(Modifier.height(6.dp))
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                classesDisponiveis.forEach { classeLabel ->
-                                    val ativo = caixaAtual.rotulo.equals(classeLabel, ignoreCase = true)
-                                    val corClasse = corParaLabel(classeLabel, manual = false)
-                                    Button(
-                                        onClick = {
-                                            caixas[indiceSelecionado] = caixaAtual.copy(rotulo = classeLabel)
-                                            classeParaAdicionar = classeLabel
-                                            indiceSelecionado = -1
-                                        },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = if (ativo) corClasse else Color(0xFF2C2C2C)
-                                        ),
-                                        modifier = Modifier.height(32.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                        shape = RoundedCornerShape(8.dp)
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            classesDisponiveis.forEach { classeLabel ->
+                                val ativo = caixaAtual.rotulo.equals(classeLabel, ignoreCase = true)
+                                val corClasse = corParaLabel(classeLabel, manual = false)
+                                Surface(
+                                    onClick = {
+                                        caixas[indiceSelecionado] = caixaAtual.copy(rotulo = classeLabel)
+                                        classeParaAdicionar = classeLabel
+                                        indiceSelecionado = -1
+                                    },
+                                    color = if (ativo) corClasse else Color(0xFF2C2C2C),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                                     ) {
                                         Text(
                                             rotuloAmigavel(classeLabel),
@@ -828,8 +1227,33 @@ fun TelaRevisaoCaptura(
                                             color = Color.White,
                                             fontWeight = FontWeight.Bold
                                         )
+                                        if (classesDisponiveis.size > 1) {
+                                            Icon(
+                                                Icons.Default.Close,
+                                                contentDescription = "Remover ${rotuloAmigavel(classeLabel)}",
+                                                tint = Color.White.copy(alpha = 0.78f),
+                                                modifier = Modifier
+                                                    .size(14.dp)
+                                                    .clickable {
+                                                        classesDisponiveis.remove(classeLabel)
+                                                        onAtualizarClassificacoes?.invoke(classesDisponiveis.toList())
+                                                    }
+                                            )
+                                        }
                                     }
                                 }
+                            }
+                            OutlinedButton(
+                                onClick = { mostrarDialogNovaClassificacao = true },
+                                modifier = Modifier.height(32.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF81C784)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFA5D6A7))
+                            ) {
+                                Icon(Icons.Default.Add, null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(3.dp))
+                                Text("Nova", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -950,6 +1374,54 @@ fun TelaRevisaoCaptura(
                     }
                 }
             }
+        }
+
+        if (mostrarDialogNovaClassificacao) {
+            var textoNova by remember { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { mostrarDialogNovaClassificacao = false },
+                title = { Text("Nova Classificação", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Adicione uma classificação usada na sua cultura ou região (fica salva para as próximas fotos):",
+                            fontSize = 12.sp,
+                            color = Color.Gray
+                        )
+                        OutlinedTextField(
+                            value = textoNova,
+                            onValueChange = { textoNova = it },
+                            label = { Text("Nome da classificação") },
+                            placeholder = { Text("ex: Madura, Sigatoka, Sem Mancha...") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val limpa = textoNova.trim()
+                            if (limpa.isNotBlank()) {
+                                if (classesDisponiveis.none { it.equals(limpa, ignoreCase = true) }) {
+                                    classesDisponiveis.add(limpa)
+                                    onAtualizarClassificacoes?.invoke(classesDisponiveis.toList())
+                                }
+                                val labelFinal = classesDisponiveis.first { it.equals(limpa, ignoreCase = true) }
+                                if (indiceSelecionado in caixas.indices) {
+                                    caixas[indiceSelecionado] = caixas[indiceSelecionado].copy(rotulo = labelFinal)
+                                }
+                                classeParaAdicionar = labelFinal
+                            }
+                            mostrarDialogNovaClassificacao = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
+                    ) { Text("ADICIONAR") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { mostrarDialogNovaClassificacao = false }) { Text("Cancelar") }
+                }
+            )
         }
     }
 }

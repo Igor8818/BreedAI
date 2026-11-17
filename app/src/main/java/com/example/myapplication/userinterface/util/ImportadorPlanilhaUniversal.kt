@@ -59,6 +59,27 @@ object ImportadorPlanilhaUniversal {
                 bytes[3] == 0x04.toByte()
     }
 
+    internal fun isSafeZipEntryName(entryName: String): Boolean {
+        if (entryName.isBlank()) return false
+        if (entryName.startsWith("/") || entryName.startsWith("\\")) return false
+        val normalized = entryName.replace('\\', '/')
+        return !normalized.split('/').any { it == ".." } && !normalized.contains(":")
+    }
+
+    internal fun readZipEntryBounded(input: java.io.InputStream, maxBytes: Int): ByteArray? {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val n = input.read(buf)
+            if (n <= 0) break
+            total += n
+            if (total > maxBytes) return null
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
+    }
+
     internal fun decodeBytesAutoCharset(bytes: ByteArray): String {
         if (bytes.isEmpty()) return ""
         // Verifica BOM explícito
@@ -189,13 +210,17 @@ object ImportadorPlanilhaUniversal {
             ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
-                    val nomeLower = entry.name.lowercase(Locale.ROOT)
-                    when {
-                        nomeLower == "xl/sharedstrings.xml" -> {
-                            sharedStringsBytes = zis.readBytes()
-                        }
-                        nomeLower.startsWith("xl/worksheets/sheet") && nomeLower.endsWith(".xml") -> {
-                            sheetsMap[nomeLower] = zis.readBytes()
+                    if (!entry.isDirectory && isSafeZipEntryName(entry.name)) {
+                        val nomeLower = entry.name.lowercase(Locale.ROOT)
+                        when {
+                            nomeLower == "xl/sharedstrings.xml" -> {
+                                sharedStringsBytes = readZipEntryBounded(zis, 16 * 1024 * 1024)
+                            }
+                            nomeLower.startsWith("xl/worksheets/sheet") && nomeLower.endsWith(".xml") -> {
+                                readZipEntryBounded(zis, 16 * 1024 * 1024)?.let {
+                                    sheetsMap[nomeLower] = it
+                                }
+                            }
                         }
                     }
                     entry = zis.nextEntry

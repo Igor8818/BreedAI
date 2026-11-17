@@ -308,6 +308,7 @@ object PersistenciaLocalRegistros {
 
     private const val PREFS_MODELO = "breedai_model_prefs"
     private const val KEY_MODELO_ARQUIVO = "modelo_arquivo"
+    private const val KEY_MODELO_NOME = "modelo_nome_exibicao"
     private const val KEY_INTERNO_PATH = "modelo_interno_path"
     private const val KEY_EXTERNO_URI = "externo_uri"
     private const val KEY_EXTERNO_NOME = "externo_nome"
@@ -326,6 +327,7 @@ object PersistenciaLocalRegistros {
 
             prefs.edit()
                 .putString(KEY_MODELO_ARQUIVO, config.modeloSelecionado?.nomeArquivo)
+                .putString(KEY_MODELO_NOME, config.modeloSelecionado?.nomeExibicao)
                 .putString(KEY_INTERNO_PATH, config.modeloInternoPath)
                 .putString(KEY_EXTERNO_URI, config.modeloExternoUri?.toString())
                 .putString(KEY_EXTERNO_NOME, config.modeloExternoNome)
@@ -346,6 +348,7 @@ object PersistenciaLocalRegistros {
             val threshold = prefs.getFloat(KEY_THRESHOLD, 0.30f)
             val maxResultados = prefs.getInt(KEY_MAX_RESULTADOS, 25)
             val modeloArquivo = prefs.getString(KEY_MODELO_ARQUIVO, null)
+            val modeloNome = prefs.getString(KEY_MODELO_NOME, null)
             val internoPath = prefs.getString(KEY_INTERNO_PATH, null)?.takeIf { File(it).exists() }
             val externoUriStr = prefs.getString(KEY_EXTERNO_URI, null)
             val externoNome = prefs.getString(KEY_EXTERNO_NOME, "") ?: ""
@@ -365,7 +368,10 @@ object PersistenciaLocalRegistros {
 
             val usaCustom = !internoPath.isNullOrBlank() || !externoUriStr.isNullOrBlank()
             val modeloEmbutido = if (!usaCustom) {
-                MODELOS_EMBUTIDOS.firstOrNull { it.nomeArquivo == modeloArquivo }
+                MODELOS_EMBUTIDOS.firstOrNull {
+                    !modeloNome.isNullOrBlank() && it.nomeExibicao == modeloNome && it.nomeArquivo == modeloArquivo
+                }
+                    ?: MODELOS_EMBUTIDOS.firstOrNull { it.nomeArquivo == modeloArquivo }
                     ?: MODELOS_EMBUTIDOS.firstOrNull()
             } else {
                 null
@@ -439,6 +445,79 @@ object PersistenciaLocalRegistros {
         } catch (_: Exception) {
             ConfigColetaLocal()
         }
+    }
+
+    fun isTutorialVisto(context: Context): Boolean {
+        return try {
+            context.getSharedPreferences(PREFS_COLETA, Context.MODE_PRIVATE)
+                .getBoolean("tutorial_visto", false)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun marcarTutorialVisto(context: Context) {
+        try {
+            context.getSharedPreferences(PREFS_COLETA, Context.MODE_PRIVATE).edit()
+                .putBoolean("tutorial_visto", true)
+                .apply()
+        } catch (_: Exception) {}
+    }
+
+    fun salvarVariaveisAtivasPorColeta(context: Context, coletaNome: String, idsAtivos: List<String>) {
+        try {
+            val chave = "vars_ativas_" + coletaNome.trim().lowercase().replace(Regex("[^a-z0-9._-]"), "_")
+            val json = JSONArray().apply { idsAtivos.distinct().forEach { put(it) } }.toString()
+            context.getSharedPreferences(PREFS_COLETA, Context.MODE_PRIVATE).edit()
+                .putString(chave, json)
+                .apply()
+        } catch (_: Exception) {}
+    }
+
+    fun carregarVariaveisAtivasPorColeta(context: Context, coletaNome: String): Set<String>? {
+        return try {
+            val chave = "vars_ativas_" + coletaNome.trim().lowercase().replace(Regex("[^a-z0-9._-]"), "_")
+            val prefs = context.getSharedPreferences(PREFS_COLETA, Context.MODE_PRIVATE)
+            if (!prefs.contains(chave)) return null
+            val raw = prefs.getString(chave, "[]") ?: "[]"
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { arr.optString(it)?.takeIf { s -> s.isNotBlank() } }.toSet()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private const val PREFS_CLASSIFICACOES = "breedai_classificacoes_prefs"
+
+    fun salvarClassificacoesModelo(context: Context, modelKey: String, classificacoes: List<String>) {
+        try {
+            val limpas = classificacoes.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+            val json = JSONArray().apply { limpas.forEach { put(it) } }.toString()
+            context.getSharedPreferences(PREFS_CLASSIFICACOES, Context.MODE_PRIVATE).edit()
+                .putString("cls_$modelKey", json)
+                .apply()
+        } catch (_: Exception) {}
+    }
+
+    fun carregarClassificacoesModelo(context: Context, modelKey: String): List<String>? {
+        return try {
+            val prefs = context.getSharedPreferences(PREFS_CLASSIFICACOES, Context.MODE_PRIVATE)
+            val key = "cls_$modelKey"
+            if (!prefs.contains(key)) return null
+            val raw = prefs.getString(key, "[]") ?: "[]"
+            val arr = JSONArray(raw)
+            (0 until arr.length()).mapNotNull { arr.optString(it)?.trim()?.takeIf { s -> s.isNotBlank() } }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun limparClassificacoesModelo(context: Context, modelKey: String) {
+        try {
+            context.getSharedPreferences(PREFS_CLASSIFICACOES, Context.MODE_PRIVATE).edit()
+                .remove("cls_$modelKey")
+                .apply()
+        } catch (_: Exception) {}
     }
 
     // ── UTILITÁRIOS ATÔMICOS & TESTABILIDADE JVM ──
