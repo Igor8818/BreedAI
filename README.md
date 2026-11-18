@@ -6,7 +6,7 @@
 
 <div align="center">
   <img src="docs/assets/icon_breedai.png" alt="BreedAI App Icon" width="96" />
-  <h1>BreedAI — Fenotipagem Agronômica Multi-Culturas Offline-First & Edge AI</h1>
+  <h1>BreedAI — Plataforma Android Open-Source Offline-First &amp; Motor Universal Edge AI</h1>
 </div>
 
 <p align="center">
@@ -23,9 +23,9 @@
   </a>
 </p>
 
-Aplicativo Android nativo **100% offline e independente de servidor** para fenotipagem digital em campo com Visão Computacional embarcada (**TensorFlow Lite / YOLO Universal**), projetado com fluxos inspirados no **Field Book** para melhoramento genético e experimentação agrícola multi-culturas.
+Plataforma Android nativa **100% standalone, offline-first e independente de servidor** para coleta estruturada de dados e inferência de Visão Computacional *on-device* (**TensorFlow Lite / Runtime Universal YOLO & SSD**), com **parser streaming próprio de planilhas Excel (`.xlsx` via ZIP + SAX XML)**, campos customizáveis em tempo de execução e importação dinâmica de pacotes de modelos `.zip`.
 
-> 🌱 **Evolução Arquitetural:** O **BreedAI** nasceu como a evolução generalista e *open-source* do motor de Visão Computacional *on-device* validado originalmente no ecossistema CEPEC/CEPLAC ([**CacauApp**](https://github.com/Igor8818/CacauApp) + [**CacauSync**](https://github.com/Igor8818/CacauSync)). Enquanto o `CacauApp` atende às regras institucionais do ensaio de cacau, o **BreedAI** desacopla o back-end, generaliza identificadores, variáveis fenotípicas (*Traits*), planilhas Excel/CSV e suporta **qualquer modelo YOLO/SSD `.tflite` sem heurísticas enviesadas por cultura**.
+> 🧩 **Arquitetura Desacoplada & Extensível:** O **BreedAI** generaliza em um produto *open-source* (pronto para Google Play com R8/ProGuard) o motor de Visão Computacional validado originalmente em sistemas corporativos ([**CacauApp**](https://github.com/Igor8818/CacauApp) + [**CacauSync**](https://github.com/Igor8818/CacauSync)), removendo acoplamento com servidor e suportando **qualquer modelo `.tflite` de detecção de objetos (`FLOAT32`, `UINT8`, `INT8` e `End2End NMS`)** em qualquer domínio de inspeção visual.
 
 ---
 
