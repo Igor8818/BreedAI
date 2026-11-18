@@ -1,6 +1,7 @@
 package com.example.myapplication
 
 import android.net.Uri
+import com.example.myapplication.data.PontoFormulario
 import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
 import com.example.myapplication.data.TipoVariavelExtra
@@ -182,5 +183,71 @@ class DomainConcordanceIntegrationTest {
         assertEquals(2, linhas.size)
         assertTrue(linhas[0].contains("IA_apple,IA_banana,IA_orange"))
         assertTrue(linhas[1].contains("POMAR-A,1,1,Normal,,3,2,1,0,2026-11-16 09:00:00"))
+    }
+
+    @Test
+    fun `testCsvExportPreservesOriginalSpreadsheetColumnsAndOptionalPercentages`() {
+        val pontos = listOf(
+            PontoFormulario(
+                tratamento = "CLONE-7",
+                parcela = "2",
+                planta = "5",
+                colunasPlanilha = linkedMapOf(
+                    "Bloco" to "B3",
+                    "Genotipo" to "CCN-51"
+                )
+            )
+        )
+        val reg = RegistroColeta(
+            uri = Uri.EMPTY ?: Mockito.mock(Uri::class.java),
+            idCompleto = "CLONE-7_P2_Pl5",
+            coletaNome = "Ensaio_Geral",
+            tratamento = "CLONE-7",
+            parcela = "2",
+            planta = "5",
+            situacaoPlanta = SituacaoPlanta.NORMAL,
+            diagnostico = "4 (Sadio: 3, Vassoura: 1)",
+            data = "2026-11-17 10:30:00",
+            lat = -14.79,
+            lng = -39.23,
+            totalObjetos = 4,
+            variaveisExtras = emptyMap(),
+            caixas = listOf(
+                CaixaAuditavel(0.1f, 0.1f, 0.2f, 0.2f, rotulo = "Sadio"),
+                CaixaAuditavel(0.3f, 0.1f, 0.4f, 0.2f, rotulo = "Sadio"),
+                CaixaAuditavel(0.5f, 0.1f, 0.6f, 0.2f, rotulo = "Sadio"),
+                CaixaAuditavel(0.7f, 0.1f, 0.8f, 0.2f, rotulo = "Vassoura")
+            )
+        )
+
+        val csvPadrao = gerarConteudoCsvBreedAI(
+            registros = listOf(reg),
+            labelTratamento = "Clone",
+            labelParcela = "Parcela",
+            labelPlanta = "Planta",
+            variaveisAtivas = emptyList(),
+            classesModeloExportacao = listOf("Sadio", "Vassoura"),
+            pontosFormulario = pontos
+        )
+        val linhasPadrao = csvPadrao.trim().lines()
+        assertEquals(2, linhasPadrao.size)
+        assertTrue(linhasPadrao[0].contains("Bloco,Genotipo"))
+        assertTrue(linhasPadrao[1].contains("B3,CCN-51"))
+        assertFalse(linhasPadrao[0].contains("IA_Pct_"))
+
+        val csvComPct = gerarConteudoCsvBreedAI(
+            registros = listOf(reg),
+            labelTratamento = "Clone",
+            labelParcela = "Parcela",
+            labelPlanta = "Planta",
+            variaveisAtivas = emptyList(),
+            classesModeloExportacao = listOf("Sadio", "Vassoura"),
+            pontosFormulario = pontos,
+            incluirPercentualClasses = true
+        )
+        val linhasPct = csvComPct.trim().lines()
+        assertEquals(2, linhasPct.size)
+        assertTrue(linhasPct[0].contains("IA_Pct_Sadio,IA_Pct_Vassoura"))
+        assertTrue(linhasPct[1].contains(",3,1,75.0,25.0,"))
     }
 }

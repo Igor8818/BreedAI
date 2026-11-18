@@ -18,12 +18,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import com.example.myapplication.ui.theme.BreedAITheme
 import com.example.myapplication.userinterface.util.exportarCSVBreedAI
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -33,6 +35,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +48,7 @@ import com.example.myapplication.data.ModelConfig
 import com.example.myapplication.data.PontoFormulario
 import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
+import com.example.myapplication.data.TemplateCultura
 import com.example.myapplication.data.TipoVariavelExtra
 import com.example.myapplication.data.VariavelExtra
 import com.example.myapplication.userinterface.*
@@ -67,35 +71,6 @@ import java.util.UUID
 
 private val VERDE_ESCURO = Color(0xFF1B5E20)
 private val VERDE_APP = Color(0xFF2E7D32)
-
-private val BreedAIColorScheme = lightColorScheme(
-    primary = Color(0xFF1B5E20),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFE8F5E9),
-    onPrimaryContainer = Color(0xFF1B5E20),
-    secondary = Color(0xFF2E7D32),
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFC8E6C9),
-    onSecondaryContainer = Color(0xFF1B5E20),
-    tertiary = Color(0xFFEF6C00),
-    onTertiary = Color.White,
-    background = Color(0xFFF5F7F5),
-    onBackground = Color(0xFF1C241D),
-    surface = Color.White,
-    onSurface = Color(0xFF1C241D),
-    surfaceVariant = Color(0xFFEEF3EE),
-    onSurfaceVariant = Color(0xFF425244),
-    outline = Color(0xFFB8CBB8),
-    outlineVariant = Color(0xFFDCE7DC)
-)
-
-@Composable
-fun BreedAITheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = BreedAIColorScheme,
-        content = content
-    )
-}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -123,12 +98,17 @@ fun BreedAIApp() {
     val variaveisExtras = remember { mutableStateListOf<VariavelExtra>() }
     val historicoTratamentos = remember { mutableStateListOf<String>() }
 
-    // Navegação Principal Passo a Passo (Sem Hambúrguer) na ordem do Dr. Uilson:
-    // 0 = Início (Home) | 1 = 1. Modelo IA | 2 = 2. Formulário | 3 = 3. Coleta Livre | 4 = 4. Edição Dados
+    // Navegação principal em 4 abas intuitivas:
+    // 0 = Início | 1 = Coletar (Rota / Livre) | 2 = Dados | 3 = Modelo IA
     var abaSelecionada by rememberSaveable { mutableIntStateOf(0) }
+    var modoColetaGuiada by rememberSaveable { mutableStateOf(false) }
     var mostrarTutorialPrimeiraVez by rememberSaveable { mutableStateOf(false) }
 
-    var coletaNome by rememberSaveable { mutableStateOf("Coleta_Campo_01") }
+    var coletaId by rememberSaveable { mutableStateOf("coleta_padrao") }
+    var templateId by rememberSaveable { mutableStateOf("fruticultura") }
+    val templateAtual = TemplateCultura.fromId(templateId)
+    val coletasSalvas = remember { mutableStateListOf<PersistenciaLocalRegistros.ResumoColetaSalva>() }
+    var coletaNome by rememberSaveable { mutableStateOf("Coleta Campo 01") }
     var labelTratamento by rememberSaveable { mutableStateOf("Tratamento") }
     var labelParcela by rememberSaveable { mutableStateOf("Parcela") }
     var labelPlanta by rememberSaveable { mutableStateOf("Planta") }
@@ -166,6 +146,7 @@ fun BreedAIApp() {
     var mostrarDialogRenomearColeta by remember { mutableStateOf(false) }
     var mostrarDialogSobreOffline by remember { mutableStateOf(false) }
     var mostrarDialogNovaColeta by remember { mutableStateOf(false) }
+    var mostrarDialogMinhasColetas by remember { mutableStateOf(false) }
     var mostrarDialogGerenciarVariaveis by remember { mutableStateOf(false) }
 
     // Estado de importação manual de colunas (.xlsx / .csv)
@@ -228,7 +209,7 @@ fun BreedAIApp() {
     }
 
     fun carregarPlanilhaExemplo() {
-        val tratExemplos = listOf("CCN-51", "PS-1319", "CEPEC-2002")
+        val tratExemplos = templateAtual.exemplosTratamento
         val pontosExemplo = mutableListOf<PontoFormulario>()
         var ord = 1
         for ((pIdx, trat) in tratExemplos.withIndex()) {
@@ -248,6 +229,7 @@ fun BreedAIApp() {
         formularioPontos.addAll(pontosExemplo)
         reconciliarFormularioComRegistros(formularioPontos, listaRegistros)
         PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
+        modoColetaGuiada = true
         Toast.makeText(context, "Planilha exemplo carregada (12 plantas)!", Toast.LENGTH_SHORT).show()
     }
 
@@ -255,6 +237,8 @@ fun BreedAIApp() {
         PersistenciaLocalRegistros.salvarConfigColeta(
             context,
             PersistenciaLocalRegistros.ConfigColetaLocal(
+                coletaId = coletaId,
+                templateId = templateId,
                 coletaNome = coletaNome,
                 labelTratamento = labelTratamento,
                 labelParcela = labelParcela,
@@ -264,6 +248,41 @@ fun BreedAIApp() {
                 autoAvancarPlanta = autoAvancarPlanta
             )
         )
+    }
+
+    fun atualizarListaColetas() {
+        coletasSalvas.clear()
+        coletasSalvas.addAll(PersistenciaLocalRegistros.listarColetasSalvas(context))
+    }
+
+    fun aplicarEstadoDaColetaAtiva(cfg: PersistenciaLocalRegistros.ConfigColetaLocal) {
+        coletaId = cfg.coletaId
+        templateId = cfg.templateId
+        coletaNome = cfg.coletaNome
+        labelTratamento = cfg.labelTratamento
+        labelParcela = cfg.labelParcela
+        labelPlanta = cfg.labelPlanta
+        tipoNumParcela = cfg.tipoNumParcela
+        tipoNumPlanta = cfg.tipoNumPlanta
+        autoAvancarPlanta = cfg.autoAvancarPlanta
+
+        val salvos = PersistenciaLocalRegistros.carregarRegistros(context)
+        listaRegistros.clear()
+        listaRegistros.addAll(salvos)
+        salvos.map { it.tratamento }.filter { it.isNotBlank() }.distinct().forEach {
+            if (!historicoTratamentos.contains(it)) historicoTratamentos.add(it)
+        }
+
+        val (_, formSalvo) = PersistenciaLocalRegistros.carregarFormulario(context)
+        formularioPontos.clear()
+        formularioPontos.addAll(formSalvo)
+        reconciliarFormularioComRegistros(formularioPontos, listaRegistros)
+        formSalvo.map { it.tratamento }.filter { it.isNotBlank() }.distinct().forEach {
+            if (!historicoTratamentos.contains(it)) historicoTratamentos.add(it)
+        }
+
+        sincronizarAtivasPorColeta(cfg.coletaNome)
+        atualizarListaColetas()
     }
 
     val launcherPlanilha = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -291,8 +310,10 @@ fun BreedAIApp() {
                         formularioPontos.addAll(pontos)
                         reconciliarFormularioComRegistros(formularioPontos, listaRegistros)
                         PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
+                        atualizarListaColetas()
                         mostrarTelaConfigEnsaio = false
-                        abaSelecionada = 2
+                        modoColetaGuiada = true
+                        abaSelecionada = 1
                         Toast.makeText(
                             context,
                             "${pontos.size} pontos carregados (${lida.formato})!",
@@ -334,35 +355,13 @@ fun BreedAIApp() {
 
     LaunchedEffect(Unit) {
         val cfg = PersistenciaLocalRegistros.carregarConfigColeta(context)
-        coletaNome = cfg.coletaNome
-        labelTratamento = cfg.labelTratamento
-        labelParcela = cfg.labelParcela
-        labelPlanta = cfg.labelPlanta
-        tipoNumParcela = cfg.tipoNumParcela
-        tipoNumPlanta = cfg.tipoNumPlanta
-        autoAvancarPlanta = cfg.autoAvancarPlanta
-
-        val salvos = PersistenciaLocalRegistros.carregarRegistros(context)
-        if (salvos.isNotEmpty() && listaRegistros.isEmpty()) {
-            listaRegistros.addAll(salvos)
-            salvos.map { it.tratamento }.filter { it.isNotBlank() }.distinct().forEach {
-                if (!historicoTratamentos.contains(it)) historicoTratamentos.add(it)
-            }
-        }
-
-        val (_, formSalvo) = PersistenciaLocalRegistros.carregarFormulario(context)
-        if (formSalvo.isNotEmpty() && formularioPontos.isEmpty()) {
-            formularioPontos.addAll(formSalvo)
-            reconciliarFormularioComRegistros(formularioPontos, listaRegistros)
-            formSalvo.map { it.tratamento }.filter { it.isNotBlank() }.distinct().forEach {
-                if (!historicoTratamentos.contains(it)) historicoTratamentos.add(it)
-            }
-        }
-
         val varsCarregadas = PersistenciaLocalRegistros.carregarVariaveisExtras(context)
         variaveisExtras.clear()
         variaveisExtras.addAll(varsCarregadas)
-        sincronizarAtivasPorColeta(cfg.coletaNome)
+        aplicarEstadoDaColetaAtiva(cfg)
+        if (formularioPontos.isNotEmpty()) {
+            modoColetaGuiada = true
+        }
 
         if (!PersistenciaLocalRegistros.isTutorialVisto(context)) {
             mostrarTutorialPrimeiraVez = true
@@ -388,15 +387,15 @@ fun BreedAIApp() {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        "Conte frutos, identifique doenças e organize seus experimentos direto no celular, sem precisar de internet:",
+                        "Conte objetos, identifique doenças e organize seus experimentos direto no celular, sem precisar de internet:",
                         fontSize = 13.sp,
                         color = Color(0xFF3E4E40),
                         lineHeight = 18.sp
                     )
-                    TutorialItemStep("1. Escolha o que a câmera deve identificar", "Na aba 1. Modelo, selecione um dos modelos prontos (Contagem, Doenças do Cacau, Banana ou Maçã) ou importe seu próprio modelo.")
-                    TutorialItemStep("2. Escolha se quer só contar ou anotar extras", "Na aba Início, deixe 'Somente Contagem IA' se só precisa da contagem na foto, ou ligue campos extras (ex: Vírus, Cor, Diâmetro) para esta coleta.")
-                    TutorialItemStep("3. Tire as fotos no campo", "Siga sua planilha na aba 2. Form. (ou teste com a planilha de exemplo) ou fotografe direto na aba 3. Livre.")
-                    TutorialItemStep("4. Confira e exporte sua planilha", "Depois da foto, toque nos quadrados para ajustar qualquer marcação e exporte tudo pronto na aba 4. Dados.")
+                    TutorialItemStep("1. Escolha o que a câmera identifica", "Na aba Modelo IA, selecione um modelo embutido ou importe seu arquivo .tflite/.zip e teste ao vivo na câmera.")
+                    TutorialItemStep("2. Organize sua coleta ou anotações", "Gerencie múltiplas coletas no Início, escolha o perfil da cultura e ative Anotações extras se desejar.")
+                    TutorialItemStep("3. Fotografe na aba Coletar", "Alterne entre Modo Rota (planilha .xlsx/.csv) e Modo Livre conforme sua necessidade no campo.")
+                    TutorialItemStep("4. Revise e exporte", "Toque nos quadros da foto para ajustar, use Desfazer se errar e exporte CSV ou ZIP completo na aba Dados.")
                 }
             },
             confirmButton = {
@@ -405,31 +404,56 @@ fun BreedAIApp() {
                         PersistenciaLocalRegistros.marcarTutorialVisto(context)
                         mostrarTutorialPrimeiraVez = false
                     },
+                    modifier = Modifier.heightIn(min = 48.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
-                ) { Text("COMEÇAR AGORA", fontWeight = FontWeight.Bold) }
+                ) { Text("Começar agora", fontWeight = FontWeight.Bold) }
             }
         )
     }
 
     if (mostrarDialogRenomearColeta) {
         var nomeTemp by remember(coletaNome) { mutableStateOf(coletaNome) }
+        val sugestaoData = remember(templateAtual) {
+            "${templateAtual.nomeExibicao} ${SimpleDateFormat("dd/MM", Locale.ROOT).format(Date())}"
+        }
         AlertDialog(
             onDismissRequest = { mostrarDialogRenomearColeta = false },
-            title = { Text("Renomear Coleta Atual", fontWeight = FontWeight.Bold) },
+            title = { Text("Renomear coleta atual", fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "Altere o nome desta coleta (ex: TC-2001_Fev2026) sem apagar nenhum dado já registrado:",
+                        "Altere o nome desta coleta sem apagar nenhum dado já registrado:",
                         fontSize = 13.sp,
-                        color = Color.Gray
+                        color = Color(0xFF5F6F61)
                     )
                     OutlinedTextField(
                         value = nomeTemp,
                         onValueChange = { nomeTemp = it },
-                        label = { Text("Nome da Coleta") },
+                        label = { Text("Nome da coleta") },
                         singleLine = true,
+                        trailingIcon = {
+                            if (nomeTemp.isNotEmpty()) {
+                                IconButton(onClick = { nomeTemp = "" }) {
+                                    Icon(Icons.Default.Cancel, "Limpar nome")
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth()
                     )
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        SuggestionChip(
+                            onClick = { nomeTemp = sugestaoData },
+                            label = { Text(sugestaoData, fontSize = 11.sp, maxLines = 1) }
+                        )
+                        SuggestionChip(
+                            onClick = { nomeTemp = "Ensaio Bloco 01" },
+                            label = { Text("Ensaio Bloco 01", fontSize = 11.sp, maxLines = 1) }
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -449,11 +473,14 @@ fun BreedAIApp() {
                             PersistenciaLocalRegistros.salvarVariaveisAtivasPorColeta(
                                 context, novo, variaveisExtras.filter { it.ativa }.map { it.id }
                             )
+                            atualizarListaColetas()
+                            Toast.makeText(context, "Nome alterado para \"$novo\"!", Toast.LENGTH_SHORT).show()
                         }
                         mostrarDialogRenomearColeta = false
                     },
+                    enabled = nomeTemp.trim().isNotBlank(),
                     colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
-                ) { Text("SALVAR NOME") }
+                ) { Text("Salvar nome") }
             },
             dismissButton = {
                 TextButton(onClick = { mostrarDialogRenomearColeta = false }) { Text("Cancelar") }
@@ -464,7 +491,7 @@ fun BreedAIApp() {
     if (mostrarDialogSobreOffline) {
         AlertDialog(
             onDismissRequest = { mostrarDialogSobreOffline = false },
-            title = { Text("BreedAI • 100% Offline e Privado", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            title = { Text("BreedAI • 100% offline e privado", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
@@ -472,51 +499,69 @@ fun BreedAIApp() {
                         fontSize = 13.sp
                     )
                     HorizontalDivider()
-                    Text("• Processamento Local: Todas as imagens e inferências de IA ocorrem 100% no dispositivo.", fontSize = 12.sp, color = Color.DarkGray)
-                    Text("• Dados do Usuário: Fotos, variáveis Field Book e arquivos CSV permanecem armazenados localmente sob controle do usuário.", fontSize = 12.sp, color = Color.DarkGray)
-                    Text("• GPS Opcional: As coordenadas geográficas são gravadas apenas para exportação científica local.", fontSize = 12.sp, color = Color.DarkGray)
+                    Text("• Processamento local: imagens e inferências de IA ocorrem 100% no dispositivo.", fontSize = 12.sp, color = Color.DarkGray)
+                    Text("• Dados do usuário: fotos, anotações e planilhas CSV ficam armazenados localmente.", fontSize = 12.sp, color = Color.DarkGray)
+                    Text("• GPS opcional: coordenadas gravadas apenas para exportação científica local.", fontSize = 12.sp, color = Color.DarkGray)
                 }
             },
             confirmButton = {
                 Button(
                     onClick = { mostrarDialogSobreOffline = false },
                     colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
-                ) { Text("ENTENDI") }
+                ) { Text("Entendi") }
             }
         )
     }
 
     if (mostrarDialogNovaColeta) {
-        var novoNome by remember { mutableStateOf("Coleta_${SimpleDateFormat("ddMM_HHmm", Locale.ROOT).format(Date())}") }
-        var limparFormularioTambem by remember { mutableStateOf(false) }
+        var novoNome by remember { mutableStateOf("Coleta ${SimpleDateFormat("ddMM HHmm", Locale.ROOT).format(Date())}") }
+        var templateSel by remember { mutableStateOf(templateAtual) }
+        var manterFormularioAtual by remember { mutableStateOf(false) }
         var iniciarSomenteContagem by remember { mutableStateOf(true) }
         AlertDialog(
             onDismissRequest = { mostrarDialogNovaColeta = false },
-            title = { Text("Iniciar Nova Coleta?", fontWeight = FontWeight.Bold) },
+            title = { Text("Criar nova coleta", fontWeight = FontWeight.Bold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     if (listaRegistros.isNotEmpty()) {
                         Text(
-                            "Atenção: há ${listaRegistros.size} registros salvos na coleta \"$coletaNome\". Exporte o CSV antes se ainda precisar deles.",
+                            "Seus ${listaRegistros.size} registros de \"$coletaNome\" continuarão salvos e você poderá reabri-los em Minhas Coletas.",
                             fontSize = 12.sp,
-                            color = Color(0xFFC62828)
+                            color = VERDE_ESCURO
                         )
                     }
                     OutlinedTextField(
                         value = novoNome,
                         onValueChange = { novoNome = it },
-                        label = { Text("Nome da Nova Coleta") },
+                        label = { Text("Nome da nova coleta") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Text("Perfil da cultura:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = VERDE_ESCURO)
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        TemplateCultura.entries.forEach { tpl ->
+                            FilterChip(
+                                selected = templateSel == tpl,
+                                onClick = { templateSel = tpl },
+                                label = { Text(tpl.nomeExibicao, fontSize = 11.sp) }
+                            )
+                        }
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = iniciarSomenteContagem, onCheckedChange = { iniciarSomenteContagem = it })
-                        Text("Iniciar somente com Contagem IA (desativar variáveis extras)", fontSize = 12.sp)
+                        Text("Iniciar somente com contagem IA (desativar anotações extras)", fontSize = 12.sp)
                     }
                     if (formularioPontos.isNotEmpty()) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(checked = limparFormularioTambem, onCheckedChange = { limparFormularioTambem = it })
-                            Text("Remover também a planilha carregada no Formulário", fontSize = 12.sp)
+                            Checkbox(checked = manterFormularioAtual, onCheckedChange = { manterFormularioAtual = it })
+                            Text("Copiar planilha do Formulário atual para a nova coleta", fontSize = 12.sp)
                         }
                     }
                 }
@@ -524,22 +569,19 @@ fun BreedAIApp() {
             confirmButton = {
                 Button(
                     onClick = {
-                        val nomeFinal = novoNome.trim().ifBlank { "Coleta_01" }
-                        coletaNome = nomeFinal
-                        listaRegistros.clear()
-                        PersistenciaLocalRegistros.salvarRegistros(context, emptyList())
+                        val nomeFinal = novoNome.trim().ifBlank { "Coleta 01" }
+                        val novaCfg = PersistenciaLocalRegistros.criarNovaColetaIsolada(
+                            context = context,
+                            nome = nomeFinal,
+                            templateId = templateSel.id,
+                            manterPlanilhaAtual = manterFormularioAtual
+                        )
                         parcelaNumManual = 1
                         plantaNumManual = 1
                         parcelaTxtManual = "1"
                         plantaTxtManual = "1"
-                        if (limparFormularioTambem) {
-                            formularioPontos.clear()
-                            PersistenciaLocalRegistros.limparFormulario(context)
-                        } else {
-                            reconciliarFormularioComRegistros(formularioPontos, emptyList())
-                            PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, nomeFinal)
-                        }
-                        salvarMetadadosColeta()
+                        tratamentoManual = templateSel.exemplosTratamento.firstOrNull() ?: "T-01"
+                        aplicarEstadoDaColetaAtiva(novaCfg)
                         if (iniciarSomenteContagem) {
                             ativarModoSomenteContagem()
                         } else {
@@ -548,12 +590,130 @@ fun BreedAIApp() {
                             )
                         }
                         mostrarDialogNovaColeta = false
+                        Toast.makeText(context, "Coleta \"$nomeFinal\" criada!", Toast.LENGTH_SHORT).show()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
-                ) { Text("INICIAR NOVA") }
+                ) { Text("CRIAR COLETA") }
             },
             dismissButton = {
                 TextButton(onClick = { mostrarDialogNovaColeta = false }) { Text("Cancelar") }
+            }
+        )
+    }
+
+    if (mostrarDialogMinhasColetas) {
+        LaunchedEffect(Unit) { atualizarListaColetas() }
+        AlertDialog(
+            onDismissRequest = { mostrarDialogMinhasColetas = false },
+            title = { Text("Minhas coletas (${coletasSalvas.size})", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "Toque em uma coleta para alternar sem perder dados:",
+                        fontSize = 12.sp,
+                        color = Color(0xFF5F6F61)
+                    )
+                    coletasSalvas.forEach { item ->
+                        val ativa = item.id == coletaId
+                        val tpl = TemplateCultura.fromId(item.templateId)
+                        ElevatedCard(
+                            onClick = {
+                                if (!ativa) {
+                                    PersistenciaLocalRegistros.alternarColetaAtiva(context, item.id)?.let { cfgCarregada ->
+                                        aplicarEstadoDaColetaAtiva(cfgCarregada)
+                                        Toast.makeText(context, "Coleta \"${cfgCarregada.coletaNome}\" aberta!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                mostrarDialogMinhasColetas = false
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(
+                                    if (ativa) Modifier.border(2.dp, VERDE_APP, RoundedCornerShape(12.dp))
+                                    else Modifier
+                                ),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = if (ativa) Color(0xFFE8F5E9) else Color.White
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        item.nome,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = VERDE_ESCURO
+                                    )
+                                    Text(
+                                        "${tpl.nomeExibicao} • ${item.totalRegistros} registros" +
+                                            if (item.totalPontosRota > 0) " • ${item.totalPontosRota} na rota" else "",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF5F6F61)
+                                    )
+                                }
+                                if (ativa) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = VERDE_APP
+                                    ) {
+                                        Text(
+                                            "Ativa",
+                                            color = Color.White,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            mostrarDialogMinhasColetas = false
+                                            mostrarDialogRenomearColeta = true
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.Edit, "Renomear coleta", tint = VERDE_ESCURO, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                                if (coletasSalvas.size > 1) {
+                                    IconButton(
+                                        onClick = {
+                                            PersistenciaLocalRegistros.excluirColetaSalva(context, item.id)
+                                            val novaAtiva = PersistenciaLocalRegistros.carregarConfigColeta(context)
+                                            aplicarEstadoDaColetaAtiva(novaAtiva)
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.DeleteOutline, "Excluir coleta", tint = Color(0xFFC62828), modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        mostrarDialogMinhasColetas = false
+                        mostrarDialogNovaColeta = true
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
+                ) { Text("+ Nova coleta") }
+            },
+            dismissButton = {
+                TextButton(onClick = { mostrarDialogMinhasColetas = false }) { Text("Fechar") }
             }
         )
     }
@@ -639,13 +799,15 @@ fun BreedAIApp() {
                         formularioPontos.addAll(pontos)
                         reconciliarFormularioComRegistros(formularioPontos, listaRegistros)
                         PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
+                        atualizarListaColetas()
                         planilhaPendente = null
                         mostrarTelaConfigEnsaio = false
-                        abaSelecionada = 2
+                        modoColetaGuiada = true
+                        abaSelecionada = 1
                         Toast.makeText(context, "${pontos.size} pontos carregados!", Toast.LENGTH_SHORT).show()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
-                ) { Text("CONFIRMAR") }
+                ) { Text("Confirmar") }
             },
             dismissButton = {
                 TextButton(onClick = { planilhaPendente = null }) { Text("Cancelar") }
@@ -710,19 +872,21 @@ fun BreedAIApp() {
         BackHandler { mostrarTelaConfigEnsaio = false }
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = { Text("Configurações & Variáveis Extras", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
-                    navigationIcon = {
-                        IconButton(onClick = { mostrarTelaConfigEnsaio = false }) {
-                            Icon(Icons.Default.ArrowBack, "Voltar")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = VERDE_APP,
-                        titleContentColor = Color.White,
-                        navigationIconContentColor = Color.White
+                Surface(color = Color.White, shadowElevation = 2.dp) {
+                    TopAppBar(
+                        title = { Text("Configurações da coleta", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+                        navigationIcon = {
+                            IconButton(onClick = { mostrarTelaConfigEnsaio = false }) {
+                                Icon(Icons.Default.ArrowBack, "Voltar")
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = Color.White,
+                            titleContentColor = VERDE_ESCURO,
+                            navigationIconContentColor = VERDE_ESCURO
+                        )
                     )
-                )
+                }
             }
         ) { innerPadding ->
             Box(
@@ -800,7 +964,7 @@ fun BreedAIApp() {
         return
     }
 
-    // ── NAVEGAÇÃO PRINCIPAL PASSO-A-PASSO (TOPBAR + 5 ABAS FIXAS SEM HAMBÚRGUER) ──
+    // ── NAVEGAÇÃO PRINCIPAL PASSO-A-PASSO (TOPBAR + 4 ABAS FIXAS) ──
     var modoImersivoAtivo by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -809,10 +973,9 @@ fun BreedAIApp() {
             if (!modoImersivoAtivo) {
                 val tituloSecaoAtual = when (abaSelecionada) {
                     0 -> "BreedAI"
-                    1 -> "1. Modelo IA"
-                    2 -> "2. Formulário"
-                    3 -> "3. Coleta Livre"
-                    else -> "4. Dados & CSV"
+                    1 -> if (modoColetaGuiada) "Coletar • Rota" else "Coletar • Livre"
+                    2 -> "Dados e Exportação"
+                    else -> "Modelo de IA"
                 }
                 val textoChipIA = when {
                     modelConfig.usarModeloSecundario -> "Contar+Doença"
@@ -829,31 +992,91 @@ fun BreedAIApp() {
                             titleContentColor = VERDE_ESCURO
                         ),
                         title = {
-                            Column(
-                                modifier = Modifier
-                                    .clickable { mostrarDialogRenomearColeta = true }
-                                    .padding(vertical = 2.dp)
-                            ) {
-                                Text(
-                                    tituloSecaoAtual,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = VERDE_ESCURO,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    "Coleta: $coletaNome ✎",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF4E6E52),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                            if (abaSelecionada == 0) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(9.dp)
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = Color(0xFFE8F5E9),
+                                        modifier = Modifier.size(34.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                Icons.Default.Spa,
+                                                null,
+                                                tint = VERDE_APP,
+                                                modifier = Modifier.size(19.dp)
+                                            )
+                                        }
+                                    }
+                                    Column {
+                                        Text(
+                                            "BreedAI",
+                                            fontSize = 17.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = VERDE_ESCURO,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            "Fenotipagem & Visão IA",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF5F6F61),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        tituloSecaoAtual,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = VERDE_ESCURO,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Surface(
+                                        onClick = { mostrarDialogMinhasColetas = true },
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color(0xFFF1F8E9)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.FolderOpen,
+                                                null,
+                                                tint = VERDE_APP,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                            Text(
+                                                coletaNome,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = VERDE_ESCURO,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Icon(
+                                                Icons.Default.KeyboardArrowDown,
+                                                null,
+                                                tint = VERDE_APP,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         },
                         actions = {
                             Surface(
-                                onClick = { abaSelecionada = 1 },
+                                onClick = { abaSelecionada = 3 },
                                 shape = RoundedCornerShape(16.dp),
                                 color = Color(0xFFE8F5E9),
                                 border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
@@ -876,10 +1099,10 @@ fun BreedAIApp() {
                                 }
                             }
                             IconButton(onClick = { mostrarTutorialPrimeiraVez = true }) {
-                                Icon(Icons.Default.HelpOutline, "Tutorial passo a passo", tint = VERDE_APP)
+                                Icon(Icons.Default.HelpOutline, "Tutorial rápido", tint = VERDE_APP)
                             }
                             IconButton(onClick = { mostrarTelaConfigEnsaio = true }) {
-                                Icon(Icons.Default.Tune, "Configurações da Coleta", tint = VERDE_APP)
+                                Icon(Icons.Default.Tune, "Configurações da coleta", tint = VERDE_APP)
                             }
                         }
                     )
@@ -901,19 +1124,12 @@ fun BreedAIApp() {
                             selected = abaSelecionada == 0,
                             onClick = { abaSelecionada = 0 },
                             icon = { Icon(Icons.Default.Home, null) },
-                            label = { Text("Início", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
+                            label = { Text("Início", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
                             colors = navItemColors
                         )
                         NavigationBarItem(
                             selected = abaSelecionada == 1,
                             onClick = { abaSelecionada = 1 },
-                            icon = { Icon(Icons.Default.SmartToy, null) },
-                            label = { Text("1. Modelo", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
-                            colors = navItemColors
-                        )
-                        NavigationBarItem(
-                            selected = abaSelecionada == 2,
-                            onClick = { abaSelecionada = 2 },
                             icon = {
                                 if (formularioPontos.isNotEmpty()) {
                                     BadgedBox(
@@ -923,25 +1139,18 @@ fun BreedAIApp() {
                                             }
                                         }
                                     ) {
-                                        Icon(Icons.Default.Assignment, null)
+                                        Icon(Icons.Default.PhotoCamera, null)
                                     }
                                 } else {
-                                    Icon(Icons.Default.Assignment, null)
+                                    Icon(Icons.Default.PhotoCamera, null)
                                 }
                             },
-                            label = { Text("2. Form.", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
+                            label = { Text("Coletar", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
                             colors = navItemColors
                         )
                         NavigationBarItem(
-                            selected = abaSelecionada == 3,
-                            onClick = { abaSelecionada = 3 },
-                            icon = { Icon(Icons.Default.PhotoCamera, null) },
-                            label = { Text("3. Livre", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
-                            colors = navItemColors
-                        )
-                        NavigationBarItem(
-                            selected = abaSelecionada == 4,
-                            onClick = { abaSelecionada = 4 },
+                            selected = abaSelecionada == 2,
+                            onClick = { abaSelecionada = 2 },
                             icon = {
                                 if (listaRegistros.isNotEmpty()) {
                                     BadgedBox(
@@ -957,7 +1166,14 @@ fun BreedAIApp() {
                                     Icon(Icons.Default.TableChart, null)
                                 }
                             },
-                            label = { Text("4. Dados", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
+                            label = { Text("Dados", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
+                            colors = navItemColors
+                        )
+                        NavigationBarItem(
+                            selected = abaSelecionada == 3,
+                            onClick = { abaSelecionada = 3 },
+                            icon = { Icon(Icons.Default.SmartToy, null) },
+                            label = { Text("Modelo IA", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1) },
                             colors = navItemColors
                         )
                     }
@@ -1034,6 +1250,7 @@ fun BreedAIApp() {
                 if (formularioPontos.isNotEmpty()) {
                     PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
                 }
+                atualizarListaColetas()
             }
 
             val classesExportacao = remember(modelConfig, classificacoesAtivasModelo, listaRegistros.toList()) {
@@ -1068,142 +1285,190 @@ fun BreedAIApp() {
             when (abaSelecionada) {
                 0 -> TelaInicioPassoAPasso(
                     coletaNome = coletaNome,
+                    templateAtual = templateAtual,
+                    totalColetasSalvas = coletasSalvas.size.coerceAtLeast(1),
                     totalRegistros = listaRegistros.size,
                     totalPontosFormulario = formularioPontos.size,
+                    pontosColetadosFormulario = formularioPontos.count { it.coletado },
                     modelConfig = modelConfig,
                     variaveisAtivas = variaveisAtivas,
                     todasVariaveis = variaveisExtras,
                     classesExportacao = classesExportacao,
                     onRenomearColeta = { mostrarDialogRenomearColeta = true },
                     onNovaColeta = { mostrarDialogNovaColeta = true },
+                    onAbrirMinhasColetas = { mostrarDialogMinhasColetas = true },
                     onAtivarSomenteContagem = { ativarModoSomenteContagem() },
                     onAlternarVariavel = { variavel, ativa -> alternarVariavelNaColeta(variavel, ativa) },
                     onGerenciarVariaveis = { mostrarDialogGerenciarVariaveis = true },
-                    onIrParaModelo = { abaSelecionada = 1 },
-                    onIrParaFormulario = { abaSelecionada = 2 },
-                    onIrParaLivre = { abaSelecionada = 3 },
-                    onIrParaDados = { abaSelecionada = 4 },
+                    onIrParaModelo = { abaSelecionada = 3 },
+                    onIrParaFormulario = {
+                        modoColetaGuiada = true
+                        abaSelecionada = 1
+                    },
+                    onIrParaLivre = {
+                        modoColetaGuiada = false
+                        abaSelecionada = 1
+                    },
+                    onIrParaDados = { abaSelecionada = 2 },
                     onCarregarExemplo = {
                         carregarPlanilhaExemplo()
-                        abaSelecionada = 2
+                        modoColetaGuiada = true
+                        abaSelecionada = 1
                     },
                     onAbrirTutorial = { mostrarTutorialPrimeiraVez = true },
                     onAbrirSobreOffline = { mostrarDialogSobreOffline = true }
                 )
 
-                1 -> TelaConfiguracaoModelo(
-                    configAtual = modelConfig,
-                    onSalvar = { novaConfig ->
-                        modelConfig = novaConfig
-                        PersistenciaLocalRegistros.salvarConfiguracaoModelo(context, novaConfig)
-                        classificacoesAtivasModelo = PersistenciaLocalRegistros.carregarClassificacoesModelo(
-                            context, novaConfig.chaveModeloPersistente()
-                        )
-                        abaSelecionada = if (formularioPontos.isNotEmpty()) 2 else 3
-                        Toast.makeText(
-                            context,
-                            "Modelo \"${novaConfig.nomeExibicao}\" ativado!",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    },
-                    onGerarVariaveisDoModelo = { classesSelecionadas ->
-                        modelConfig = modelConfig.copy(labelsFiltro = classesSelecionadas)
-                        PersistenciaLocalRegistros.salvarConfiguracaoModelo(context, modelConfig)
-                        Toast.makeText(
-                            context,
-                            "${classesSelecionadas.size} classe(s) configuradas como colunas IA_ automáticas no CSV.",
-                            Toast.LENGTH_LONG
-                        ).show()
+                1 -> Column(modifier = Modifier.fillMaxSize()) {
+                    if (!modoImersivoAtivo) {
+                        Surface(
+                            color = Color.White,
+                            shadowElevation = 1.dp,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                                    .background(Color(0xFFEEF3EE), RoundedCornerShape(10.dp))
+                                    .padding(3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Surface(
+                                    onClick = { modoColetaGuiada = true },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(36.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (modoColetaGuiada) VERDE_APP else Color.Transparent
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            if (formularioPontos.isNotEmpty()) "Modo Rota (${formularioPontos.size})" else "Modo Rota (Planilha)",
+                                            fontSize = 12.sp,
+                                            fontWeight = if (modoColetaGuiada) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (modoColetaGuiada) Color.White else Color(0xFF3E4E40),
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                                Surface(
+                                    onClick = { modoColetaGuiada = false },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(36.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (!modoColetaGuiada) VERDE_APP else Color.Transparent
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            "Modo Livre",
+                                            fontSize = 12.sp,
+                                            fontWeight = if (!modoColetaGuiada) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (!modoColetaGuiada) Color.White else Color(0xFF3E4E40),
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
-                )
 
-                2 -> TelaFormularioFieldBook(
-                    ensaio = coletaNome,
-                    pontos = formularioPontos,
-                    registrosSalvos = listaRegistros,
-                    labelTratamento = labelTratamento,
-                    labelParcela = labelParcela,
-                    labelPlanta = labelPlanta,
-                    modelConfig = modelConfig,
-                    variaveisAtivas = variaveisAtivas,
-                    todasVariaveis = variaveisExtras,
-                    onToggleVariavel = { variavel, ativa -> alternarVariavelNaColeta(variavel, ativa) },
-                    onDesativarTodas = { ativarModoSomenteContagem() },
-                    onAbrirConfigVariaveis = { mostrarTelaConfigEnsaio = true },
-                    onCarregarPlanilhaClick = { launcherPlanilha.launch("*/*") },
-                    onCarregarExemploClick = { carregarPlanilhaExemplo() },
-                    onLimparFormularioClick = {
-                        formularioPontos.clear()
-                        PersistenciaLocalRegistros.limparFormulario(context)
-                    },
-                    onModoImersivoChange = { modoImersivoAtivo = it },
-                    classificacoesPersonalizadas = classificacoesAtivasModelo,
-                    onAtualizarClassificacoes = ::atualizarClassificacoesAtivas,
-                    onRegistrarPonto = { uri, ponto, situacao, motivo, totalObj, extras, caixas ->
-                        salvarOuAtualizarRegistro(
-                            uri = uri,
-                            tratamento = ponto.tratamento,
-                            parcela = ponto.parcela,
-                            planta = ponto.planta,
-                            situacao = situacao,
-                            motivoNaoAval = motivo,
-                            totalObjetos = totalObj,
-                            extras = extras,
-                            caixas = caixas
-                        )
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                        if (modoColetaGuiada) {
+                            TelaFormularioFieldBook(
+                                ensaio = coletaNome,
+                                pontos = formularioPontos,
+                                registrosSalvos = listaRegistros,
+                                labelTratamento = labelTratamento,
+                                labelParcela = labelParcela,
+                                labelPlanta = labelPlanta,
+                                modelConfig = modelConfig,
+                                variaveisAtivas = variaveisAtivas,
+                                todasVariaveis = variaveisExtras,
+                                onToggleVariavel = { variavel, ativa -> alternarVariavelNaColeta(variavel, ativa) },
+                                onDesativarTodas = { ativarModoSomenteContagem() },
+                                onAbrirConfigVariaveis = { mostrarTelaConfigEnsaio = true },
+                                onCarregarPlanilhaClick = { launcherPlanilha.launch("*/*") },
+                                onCarregarExemploClick = { carregarPlanilhaExemplo() },
+                                onLimparFormularioClick = {
+                                    formularioPontos.clear()
+                                    PersistenciaLocalRegistros.limparFormulario(context)
+                                    atualizarListaColetas()
+                                },
+                                onModoImersivoChange = { modoImersivoAtivo = it },
+                                classificacoesPersonalizadas = classificacoesAtivasModelo,
+                                onAtualizarClassificacoes = ::atualizarClassificacoesAtivas,
+                                templateCultura = templateAtual,
+                                onRegistrarPonto = { uri, ponto, situacao, motivo, totalObj, extras, caixas ->
+                                    salvarOuAtualizarRegistro(
+                                        uri = uri,
+                                        tratamento = ponto.tratamento,
+                                        parcela = ponto.parcela,
+                                        planta = ponto.planta,
+                                        situacao = situacao,
+                                        motivoNaoAval = motivo,
+                                        totalObjetos = totalObj,
+                                        extras = extras,
+                                        caixas = caixas
+                                    )
+                                }
+                            )
+                        } else {
+                            TelaColetaLivreFieldBook(
+                                ensaio = coletaNome,
+                                registrosSalvos = listaRegistros,
+                                label1 = labelTratamento,
+                                label2 = labelParcela,
+                                label3 = labelPlanta,
+                                isNum2 = tipoNumParcela,
+                                isNum3 = tipoNumPlanta,
+                                autoAvancarPlanta = autoAvancarPlanta,
+                                onAutoAvancarChange = {
+                                    autoAvancarPlanta = it
+                                    salvarMetadadosColeta()
+                                },
+                                tratamento = tratamentoManual,
+                                onTratamentoChange = { tratamentoManual = it },
+                                historicoTratamentos = historicoTratamentos,
+                                parcelaNum = parcelaNumManual,
+                                onParcelaNumChange = { parcelaNumManual = it },
+                                parcelaTxt = parcelaTxtManual,
+                                onParcelaTxtChange = { parcelaTxtManual = it },
+                                plantaNum = plantaNumManual,
+                                onPlantaNumChange = { plantaNumManual = it },
+                                plantaTxt = plantaTxtManual,
+                                onPlantaTxtChange = { plantaTxtManual = it },
+                                modelConfig = modelConfig,
+                                variaveisAtivas = variaveisAtivas,
+                                todasVariaveis = variaveisExtras,
+                                onToggleVariavel = { variavel, ativa -> alternarVariavelNaColeta(variavel, ativa) },
+                                onDesativarTodas = { ativarModoSomenteContagem() },
+                                onAbrirConfigVariaveis = { mostrarTelaConfigEnsaio = true },
+                                onModoImersivoChange = { modoImersivoAtivo = it },
+                                classificacoesPersonalizadas = classificacoesAtivasModelo,
+                                onAtualizarClassificacoes = ::atualizarClassificacoesAtivas,
+                                templateCultura = templateAtual,
+                                onSalvarColeta = { uri, trat, parc, pl, situacao, motivo, totalObj, extras, caixas ->
+                                    salvarOuAtualizarRegistro(
+                                        uri = uri,
+                                        tratamento = trat,
+                                        parcela = parc,
+                                        planta = pl,
+                                        situacao = situacao,
+                                        motivoNaoAval = motivo,
+                                        totalObjetos = totalObj,
+                                        extras = extras,
+                                        caixas = caixas
+                                    )
+                                    if (tipoNumPlanta && autoAvancarPlanta) plantaNumManual++
+                                }
+                            )
+                        }
                     }
-                )
+                }
 
-                3 -> TelaColetaLivreFieldBook(
-                    ensaio = coletaNome,
-                    registrosSalvos = listaRegistros,
-                    label1 = labelTratamento,
-                    label2 = labelParcela,
-                    label3 = labelPlanta,
-                    isNum2 = tipoNumParcela,
-                    isNum3 = tipoNumPlanta,
-                    autoAvancarPlanta = autoAvancarPlanta,
-                    onAutoAvancarChange = {
-                        autoAvancarPlanta = it
-                        salvarMetadadosColeta()
-                    },
-                    tratamento = tratamentoManual,
-                    onTratamentoChange = { tratamentoManual = it },
-                    historicoTratamentos = historicoTratamentos,
-                    parcelaNum = parcelaNumManual,
-                    onParcelaNumChange = { parcelaNumManual = it },
-                    parcelaTxt = parcelaTxtManual,
-                    onParcelaTxtChange = { parcelaTxtManual = it },
-                    plantaNum = plantaNumManual,
-                    onPlantaNumChange = { plantaNumManual = it },
-                    plantaTxt = plantaTxtManual,
-                    onPlantaTxtChange = { plantaTxtManual = it },
-                    modelConfig = modelConfig,
-                    variaveisAtivas = variaveisAtivas,
-                    todasVariaveis = variaveisExtras,
-                    onToggleVariavel = { variavel, ativa -> alternarVariavelNaColeta(variavel, ativa) },
-                    onDesativarTodas = { ativarModoSomenteContagem() },
-                    onAbrirConfigVariaveis = { mostrarTelaConfigEnsaio = true },
-                    onModoImersivoChange = { modoImersivoAtivo = it },
-                    classificacoesPersonalizadas = classificacoesAtivasModelo,
-                    onAtualizarClassificacoes = ::atualizarClassificacoesAtivas,
-                    onSalvarColeta = { uri, trat, parc, pl, situacao, motivo, totalObj, extras, caixas ->
-                        salvarOuAtualizarRegistro(
-                            uri = uri,
-                            tratamento = trat,
-                            parcela = parc,
-                            planta = pl,
-                            situacao = situacao,
-                            motivoNaoAval = motivo,
-                            totalObjetos = totalObj,
-                            extras = extras,
-                            caixas = caixas
-                        )
-                        if (tipoNumPlanta && autoAvancarPlanta) plantaNumManual++
-                    }
-                )
-
-                else -> TelaEdicaoDados(
+                2 -> TelaEdicaoDados(
                     registros = listaRegistros,
                     coletaNome = coletaNome,
                     labelTratamento = labelTratamento,
@@ -1211,6 +1476,9 @@ fun BreedAIApp() {
                     labelPlanta = labelPlanta,
                     variaveisExtrasConfig = variaveisExtras,
                     classesModeloExportacao = classesExportacao,
+                    pontosFormulario = formularioPontos,
+                    incluirPercentualClassesCsv = modelConfig.incluirPercentualClassesCsv,
+                    templateCultura = templateAtual,
                     onAbrirConfigVariaveis = { mostrarTelaConfigEnsaio = true },
                     onEditarCaixas = { reg ->
                         if (reg.uri != Uri.EMPTY) {
@@ -1228,6 +1496,7 @@ fun BreedAIApp() {
                             if (formularioPontos.isNotEmpty()) {
                                 PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
                             }
+                            atualizarListaColetas()
                             Toast.makeText(context, "Registro atualizado!", Toast.LENGTH_SHORT).show()
                         }
                     },
@@ -1238,7 +1507,36 @@ fun BreedAIApp() {
                         if (formularioPontos.isNotEmpty()) {
                             PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
                         }
+                        atualizarListaColetas()
                         Toast.makeText(context, "Registro excluído.", Toast.LENGTH_SHORT).show()
+                    }
+                )
+
+                else -> TelaConfiguracaoModelo(
+                    configAtual = modelConfig,
+                    onModoImersivoChange = { modoImersivoAtivo = it },
+                    onSalvar = { novaConfig ->
+                        modelConfig = novaConfig
+                        PersistenciaLocalRegistros.salvarConfiguracaoModelo(context, novaConfig)
+                        classificacoesAtivasModelo = PersistenciaLocalRegistros.carregarClassificacoesModelo(
+                            context, novaConfig.chaveModeloPersistente()
+                        )
+                        modoColetaGuiada = formularioPontos.isNotEmpty()
+                        abaSelecionada = 1
+                        Toast.makeText(
+                            context,
+                            "Modelo \"${novaConfig.nomeExibicao}\" ativado!",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    onGerarVariaveisDoModelo = { classesSelecionadas ->
+                        modelConfig = modelConfig.copy(labelsFiltro = classesSelecionadas)
+                        PersistenciaLocalRegistros.salvarConfiguracaoModelo(context, modelConfig)
+                        Toast.makeText(
+                            context,
+                            "${classesSelecionadas.size} classe(s) configuradas como colunas IA_ automáticas no CSV.",
+                            Toast.LENGTH_LONG
+                        ).show()
                     }
                 )
             }
@@ -1265,14 +1563,18 @@ private fun TutorialItemStep(titulo: String, descricao: String) {
 @Composable
 fun TelaInicioPassoAPasso(
     coletaNome: String,
+    templateAtual: TemplateCultura,
+    totalColetasSalvas: Int,
     totalRegistros: Int,
     totalPontosFormulario: Int,
+    pontosColetadosFormulario: Int = 0,
     modelConfig: ModelConfig,
     variaveisAtivas: List<VariavelExtra>,
     todasVariaveis: List<VariavelExtra>,
     classesExportacao: List<String>,
     onRenomearColeta: () -> Unit,
     onNovaColeta: () -> Unit,
+    onAbrirMinhasColetas: () -> Unit,
     onAtivarSomenteContagem: () -> Unit,
     onAlternarVariavel: (VariavelExtra, Boolean) -> Unit,
     onGerenciarVariaveis: () -> Unit,
@@ -1284,161 +1586,511 @@ fun TelaInicioPassoAPasso(
     onAbrirTutorial: () -> Unit,
     onAbrirSobreOffline: () -> Unit
 ) {
+    var mostrarAjudaAnotacoes by remember { mutableStateOf(false) }
+
+    if (mostrarAjudaAnotacoes) {
+        AlertDialog(
+            onDismissRequest = { mostrarAjudaAnotacoes = false },
+            title = { Text("Anotações da coleta", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            text = {
+                Text(
+                    "Modo rápido salva e exporta somente a contagem feita pela IA na foto. Para anotar campos extras (ex: Vírus, Cor, Diâmetro), toque em um chip ou em Gerenciar.",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { mostrarAjudaAnotacoes = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
+                ) { Text("Entendi") }
+            }
+        )
+    }
+
+    val classesAmigaveis = remember(modelConfig.labelsFiltro, classesExportacao) {
+        val origem = if (modelConfig.labelsFiltro.isNotEmpty()) modelConfig.labelsFiltro else classesExportacao
+        origem.map { traduzirLabelDisplay(it) }.distinct()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // 1. Hero Card da Coleta Ativa
         Surface(
-            color = VERDE_ESCURO,
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(20.dp),
+            shadowElevation = 3.dp,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(Color(0xFF164A1B), Color(0xFF2E7D32))
+                        )
+                    )
             ) {
-                Text(
-                    "Guia Passo a Passo de Campo",
-                    color = Color(0xFFC8E6C9),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    coletaNome,
-                    color = Color.White,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    "$totalRegistros plantas coletadas • $totalPontosFormulario na planilha de rota",
-                    color = Color(0xFFE8F5E9),
-                    fontSize = 12.sp
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = onRenomearColeta,
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.55f)),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.height(34.dp)
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Edit, null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Renomear", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "COLETA ATIVA",
+                            color = Color(0xFFA5D6A7),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp
+                        )
+                        Surface(
+                            color = Color.White.copy(alpha = 0.16f),
+                            shape = RoundedCornerShape(20.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Spa,
+                                    null,
+                                    tint = Color(0xFFC8E6C9),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Text(
+                                    templateAtual.nomeExibicao,
+                                    color = Color(0xFFE8F5E9),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
+                            }
+                        }
                     }
-                    Button(
-                        onClick = onNovaColeta,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF43A047)),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.height(34.dp)
+
+                    // Campo clicável de edição rápida do nome da coleta
+                    Surface(
+                        onClick = onRenomearColeta,
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color.White.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.32f)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.AddCircleOutline, null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Nova Coleta", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    coletaNome,
+                                    color = Color.White,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    "Toque para editar o nome da coleta",
+                                    color = Color(0xFFC8E6C9),
+                                    fontSize = 11.sp,
+                                    maxLines = 1
+                                )
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color.White.copy(alpha = 0.22f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Edit, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Editar", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    // Métricas + Progresso da rota
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                color = Color.White.copy(alpha = 0.10f),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.CheckCircleOutline,
+                                        null,
+                                        tint = Color(0xFF69F0AE),
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        "$totalRegistros plantas salvas",
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Surface(
+                                color = Color.White.copy(alpha = 0.10f),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Route,
+                                        null,
+                                        tint = Color(0xFFC8E6C9),
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        if (totalPontosFormulario > 0) {
+                                            "$pontosColetadosFormulario/$totalPontosFormulario na rota"
+                                        } else {
+                                            "Sem planilha"
+                                        },
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+
+                        if (totalPontosFormulario > 0) {
+                            LinearProgressIndicator(
+                                progress = {
+                                    (pontosColetadosFormulario.toFloat() / totalPontosFormulario.toFloat()).coerceIn(0f, 1f)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp)),
+                                color = Color(0xFF69F0AE),
+                                trackColor = Color.White.copy(alpha = 0.20f)
+                            )
+                        }
+                    }
+
+                    // Botões de gestão de coletas
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onAbrirMinhasColetas,
+                            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.55f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(1f).height(42.dp)
+                        ) {
+                            Icon(Icons.Default.FolderCopy, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("Trocar ($totalColetasSalvas)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        }
+                        Button(
+                            onClick = onNovaColeta,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White,
+                                contentColor = VERDE_ESCURO
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.weight(1f).height(42.dp)
+                        ) {
+                            Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("Nova coleta", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        }
                     }
                 }
             }
         }
 
-        // Passo 1: O que a IA vai identificar
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFDCE7DC))
-        ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+        // 2. Iniciar coleta em campo — Dois cartões visuais lado a lado
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                "Iniciar coleta em campo",
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = VERDE_ESCURO,
+                modifier = Modifier.padding(horizontal = 2.dp)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                ElevatedCard(
+                    onClick = onIrParaFormulario,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
                 ) {
-                    Text("Passo 1 • O que a IA vai identificar?", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_ESCURO)
-                    Surface(color = Color(0xFFE8F5E9), shape = RoundedCornerShape(10.dp)) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFE8F5E9)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.Route, null, tint = VERDE_APP, modifier = Modifier.size(22.dp))
+                        }
                         Text(
-                            if (modelConfig.usarModeloSecundario) "Contar + Doenças" else "100% Offline",
-                            fontSize = 10.sp,
+                            "Modo Rota",
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = VERDE_ESCURO,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            maxLines = 1
+                        )
+                        Text(
+                            if (totalPontosFormulario > 0) {
+                                "$pontosColetadosFormulario de $totalPontosFormulario avaliadas"
+                            } else {
+                                "Seguir planilha .xlsx/.csv"
+                            },
+                            fontSize = 11.sp,
+                            color = Color(0xFF5F6F61),
+                            maxLines = 2
+                        )
+                        Text(
+                            "Abrir rota →",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = VERDE_APP
                         )
                     }
                 }
-                Text(
-                    modelConfig.nomeExibicao,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    color = Color(0xFF1C241D)
-                )
-                Text(
-                    if (modelConfig.labelsFiltro.isEmpty()) {
-                        "Reconhecendo todas as categorias disponíveis neste modelo."
-                    } else {
-                        "Contando na tela: ${modelConfig.labelsFiltro.joinToString(", ")}"
-                    },
-                    fontSize = 12.sp,
-                    color = Color(0xFF5F6F61)
-                )
-                Button(
-                    onClick = onIrParaModelo,
-                    modifier = Modifier.fillMaxWidth().height(42.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP),
-                    shape = RoundedCornerShape(10.dp)
+
+                ElevatedCard(
+                    onClick = onIrParaLivre,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
                 ) {
-                    Icon(Icons.Default.SmartToy, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("1. Escolher ou Importar Modelo", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFE8F5E9)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.PhotoCamera, null, tint = VERDE_ESCURO, modifier = Modifier.size(22.dp))
+                        }
+                        Text(
+                            "Coleta Livre",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = VERDE_ESCURO,
+                            maxLines = 1
+                        )
+                        Text(
+                            "Fotografar e contar direto",
+                            fontSize = 11.sp,
+                            color = Color(0xFF5F6F61),
+                            maxLines = 2
+                        )
+                        Text(
+                            "Abrir câmera →",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = VERDE_APP
+                        )
+                    }
+                }
+            }
+
+            if (totalPontosFormulario == 0) {
+                Surface(
+                    onClick = onCarregarExemplo,
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFE8F5E9),
+                    border = BorderStroke(1.dp, Color(0xFFC8E6C9)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.PlayCircleOutline,
+                            null,
+                            tint = VERDE_APP,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            "Sem planilha? Carregar rota de exemplo (12 plantas)",
+                            fontSize = 12.sp,
+                            color = VERDE_ESCURO,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }
 
-        // Passo 2: Anotações Extras (Opcional)
-        Card(
+        // 3. Configuração rápida (IA e Anotações)
+        ElevatedCard(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
         ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onIrParaModelo() },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFE8F5E9),
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.AutoAwesome, null, tint = VERDE_APP, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "Modelo de IA • Certeza ${(modelConfig.threshold * 100).toInt()}%",
+                            fontSize = 11.sp,
+                            color = Color(0xFF5F6F61)
+                        )
+                        Text(
+                            modelConfig.nomeExibicao,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = VERDE_ESCURO,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            if (classesAmigaveis.isEmpty()) "Reconhecendo todas as classes do modelo"
+                            else "Contando: ${classesAmigaveis.take(4).joinToString(", ")}",
+                            fontSize = 11.sp,
+                            color = Color(0xFF5F6F61),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Surface(
+                        onClick = onIrParaModelo,
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFFE8F5E9)
+                    ) {
+                        Text(
+                            "Trocar",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = VERDE_ESCURO,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = Color(0xFFEEF3EE))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Passo 2 • Anotações Extras (Opcional)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_ESCURO)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Anotações extras", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = VERDE_ESCURO)
+                        Spacer(Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFF1F8E9)
+                        ) {
+                            Text(
+                                if (variaveisAtivas.isEmpty()) "Só contagem" else "${variaveisAtivas.size} ativa(s)",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = VERDE_APP,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(2.dp))
+                        IconButton(
+                            onClick = { mostrarAjudaAnotacoes = true },
+                            modifier = Modifier.size(22.dp)
+                        ) {
+                            Icon(Icons.Default.Info, "Ajuda sobre anotações", tint = Color(0xFF5F6F61), modifier = Modifier.size(15.dp))
+                        }
+                    }
                     TextButton(onClick = onGerenciarVariaveis, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-                        Icon(Icons.Default.Tune, null, modifier = Modifier.size(14.dp), tint = VERDE_APP)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Criar/Excluir", fontSize = 11.sp, color = VERDE_APP, fontWeight = FontWeight.Bold)
+                        Text("Gerenciar", fontSize = 12.sp, color = VERDE_APP, fontWeight = FontWeight.Bold)
                     }
                 }
-                Text(
-                    if (variaveisAtivas.isEmpty()) {
-                        "Modo rápido ativo: você vai apenas fotografar e contar com a IA (sem campos manuais)."
-                    } else {
-                        "Campos ativos além da foto (${variaveisAtivas.size}): ${variaveisAtivas.joinToString(", ") { it.nome }}"
-                    },
-                    fontSize = 12.sp,
-                    color = Color(0xFF425244),
-                    lineHeight = 17.sp
+
+                val chipColors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = Color(0xFFE8F5E9),
+                    selectedLabelColor = VERDE_ESCURO
                 )
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     item {
                         FilterChip(
                             selected = variaveisAtivas.isEmpty(),
                             onClick = onAtivarSomenteContagem,
-                            label = { Text("Somente Contagem IA", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) }
+                            colors = chipColors,
+                            label = { Text("Somente contagem IA", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) }
                         )
                     }
                     items(todasVariaveis) { variavel ->
                         FilterChip(
                             selected = variavel.ativa,
                             onClick = { onAlternarVariavel(variavel, !variavel.ativa) },
+                            colors = chipColors,
                             label = { Text(variavel.nome, fontSize = 11.sp) }
                         )
                     }
@@ -1446,109 +2098,63 @@ fun TelaInicioPassoAPasso(
             }
         }
 
-        // Passo 3: Coletar no Campo
-        Card(
+        // 4. Dados salvos e Exportação
+        ElevatedCard(
+            onClick = onIrParaDados,
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
         ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Passo 3 • Coletar no Campo", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_ESCURO)
-                Text(
-                    "• 2. Form.: siga uma lista pronta de parcelas/plantas da sua planilha.\n• 3. Coleta Livre: vá direto para a câmera, sem planilha.",
-                    fontSize = 12.sp,
-                    color = Color(0xFF5F6F61),
-                    lineHeight = 17.sp
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFE8F5E9),
+                    modifier = Modifier.size(40.dp)
                 ) {
-                    Button(
-                        onClick = onIrParaFormulario,
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp)
-                    ) {
-                        Icon(Icons.Default.Assignment, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("2. Form. ($totalPontosFormulario)", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
-                    }
-                    OutlinedButton(
-                        onClick = onIrParaLivre,
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, VERDE_APP),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_ESCURO),
-                        contentPadding = PaddingValues(horizontal = 8.dp)
-                    ) {
-                        Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("3. Coleta Livre", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.TableChart, null, tint = VERDE_ESCURO, modifier = Modifier.size(20.dp))
                     }
                 }
-                if (totalPontosFormulario == 0) {
-                    OutlinedButton(
-                        onClick = onCarregarExemplo,
-                        modifier = Modifier.fillMaxWidth().height(38.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Testar com Planilha de Exemplo (12 plantas)", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                    }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        "Dados salvos e exportação",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = VERDE_ESCURO
+                    )
+                    Text(
+                        "$totalRegistros planta(s) registrada(s) • Exportar CSV ou ZIP",
+                        fontSize = 11.sp,
+                        color = Color(0xFF5F6F61),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
+                Icon(Icons.Default.ChevronRight, null, tint = VERDE_APP)
             }
         }
 
-        // Passo 4: Revisão & Exportação
-        Card(
+        // 5. Rodapé
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Passo 4 • Conferir e Exportar Planilha (CSV)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_ESCURO)
-                Text(
-                    if (classesExportacao.isNotEmpty()) {
-                        "Ao exportar, a planilha já incluirá automaticamente colunas de contagem para: ${classesExportacao.joinToString(", ")}."
-                    } else {
-                        "Confira suas fotos, GPS, anotações e gere o arquivo .csv pronto para abrir no Excel ou R."
-                    },
-                    fontSize = 12.sp,
-                    color = Color(0xFF5F6F61),
-                    lineHeight = 17.sp
-                )
-                Button(
-                    onClick = onIrParaDados,
-                    modifier = Modifier.fillMaxWidth().height(42.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1565C0)),
-                    shape = RoundedCornerShape(10.dp)
-                ) {
-                    Icon(Icons.Default.TableChart, null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("4. Abrir Dados & Exportar ($totalRegistros)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    TextButton(onClick = onAbrirTutorial) {
-                        Icon(Icons.Default.HelpOutline, null, modifier = Modifier.size(15.dp), tint = VERDE_APP)
-                        Spacer(Modifier.width(4.dp))
-                        Text("Rever Tutorial", fontSize = 11.sp, color = VERDE_APP)
-                    }
-                    TextButton(onClick = onAbrirSobreOffline) {
-                        Icon(Icons.Default.VerifiedUser, null, modifier = Modifier.size(15.dp), tint = Color(0xFF4E6E52))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Privacidade Offline", fontSize = 11.sp, color = Color(0xFF4E6E52))
-                    }
-                }
+            TextButton(onClick = onAbrirTutorial) {
+                Icon(Icons.Default.HelpOutline, null, modifier = Modifier.size(15.dp), tint = VERDE_APP)
+                Spacer(Modifier.width(4.dp))
+                Text("Tutorial rápido", fontSize = 12.sp, color = VERDE_APP)
+            }
+            TextButton(onClick = onAbrirSobreOffline) {
+                Icon(Icons.Default.VerifiedUser, null, modifier = Modifier.size(15.dp), tint = Color(0xFF4E6E52))
+                Spacer(Modifier.width(4.dp))
+                Text("Privacidade 100% offline", fontSize = 12.sp, color = Color(0xFF4E6E52))
             }
         }
     }
@@ -1557,6 +2163,7 @@ fun TelaInicioPassoAPasso(
 // ════════════════════════════════════════════════════
 // ABA 1: MODO ROTA (LAYOUT LIMPO IDÊNTICO AO CACAUAPP + PLANILHA UNIVERSAL)
 // ════════════════════════════════════════════════════
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TelaFormularioFieldBook(
     ensaio: String,
@@ -1585,7 +2192,8 @@ fun TelaFormularioFieldBook(
     onDesativarTodas: (() -> Unit)? = null,
     onCarregarExemploClick: () -> Unit = {},
     classificacoesPersonalizadas: List<String>? = null,
-    onAtualizarClassificacoes: ((List<String>) -> Unit)? = null
+    onAtualizarClassificacoes: ((List<String>) -> Unit)? = null,
+    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA
 ) {
     val context = LocalContext.current
 
@@ -1596,13 +2204,16 @@ fun TelaFormularioFieldBook(
     var indiceAtual by rememberSaveable(pontos.size) { mutableIntStateOf(primeiroPendente) }
 
     var cameraAtiva by remember { mutableStateOf(false) }
+    var mostrarDialogIrParaPlanta by remember { mutableStateOf(false) }
     var fotoParaRevisao by remember { mutableStateOf<Uri?>(null) }
     var caixasCapturadas by remember { mutableStateOf<List<Detection>>(emptyList()) }
     var bitmapWCapturado by remember { mutableFloatStateOf(1f) }
     var bitmapHCapturado by remember { mutableFloatStateOf(1f) }
 
     var situacaoAtual by remember { mutableStateOf(SituacaoPlanta.NORMAL) }
-    var motivoAtual by remember { mutableStateOf(MOTIVOS_NAO_AVALIAVEL.first()) }
+    var motivoAtual by remember {
+        mutableStateOf(templateCultura.motivosSugeridos.firstOrNull() ?: MOTIVOS_NAO_AVALIAVEL.first())
+    }
     val valoresExtrasAtual = remember { mutableStateMapOf<String, String>() }
 
     LaunchedEffect(indiceAtual, pontos.size, registrosSalvos.size) {
@@ -1613,11 +2224,13 @@ fun TelaFormularioFieldBook(
             valoresExtrasAtual.clear()
             if (salvo != null) {
                 situacaoAtual = salvo.situacaoPlanta
-                motivoAtual = salvo.motivoNaoAvaliavel.ifBlank { MOTIVOS_NAO_AVALIAVEL.first() }
+                motivoAtual = salvo.motivoNaoAvaliavel.ifBlank {
+                    templateCultura.motivosSugeridos.firstOrNull() ?: MOTIVOS_NAO_AVALIAVEL.first()
+                }
                 valoresExtrasAtual.putAll(salvo.variaveisExtras)
             } else {
                 situacaoAtual = SituacaoPlanta.NORMAL
-                motivoAtual = MOTIVOS_NAO_AVALIAVEL.first()
+                motivoAtual = templateCultura.motivosSugeridos.firstOrNull() ?: MOTIVOS_NAO_AVALIAVEL.first()
             }
         }
     }
@@ -1669,27 +2282,27 @@ fun TelaFormularioFieldBook(
                 .padding(20.dp),
             contentAlignment = Alignment.Center
         ) {
-            Card(
+            ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+                colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
             ) {
                 Column(
                     modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(Icons.Default.TableView, null, modifier = Modifier.size(56.dp), tint = VERDE_APP)
+                    Icon(Icons.Default.TableView, null, modifier = Modifier.size(52.dp), tint = VERDE_APP)
                     Text(
-                        "Rota de Campo (Planilha)",
+                        "Planilha de rota",
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
                         color = VERDE_ESCURO,
                         textAlign = TextAlign.Center
                     )
                     Text(
-                        "Importe uma planilha .xlsx ou .csv com a ordem das parcelas e plantas do experimento para coleta sequencial.",
+                        "Importe uma planilha (.xlsx ou .csv) com as parcelas e plantas do experimento.",
                         color = Color(0xFF5F6F61),
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center
@@ -1697,24 +2310,31 @@ fun TelaFormularioFieldBook(
                     Spacer(Modifier.height(6.dp))
                     Button(
                         onClick = onCarregarPlanilhaClick,
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP),
-                        shape = RoundedCornerShape(12.dp)
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
                     ) {
-                        Icon(Icons.Default.UploadFile, null)
+                        Icon(Icons.Default.UploadFile, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("IMPORTAR PLANILHA (.XLSX / .CSV)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("Importar planilha (.xlsx ou .csv)", fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
                     }
                     OutlinedButton(
                         onClick = onCarregarExemploClick,
-                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_ESCURO)
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_ESCURO),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
                     ) {
                         Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("CARREGAR PLANILHA DE EXEMPLO (12 PLANTAS)", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        Text(
+                            "Usar planilha de exemplo (12 plantas)",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 }
             }
@@ -1781,6 +2401,81 @@ fun TelaFormularioFieldBook(
         return
     }
 
+    if (mostrarDialogIrParaPlanta) {
+        var buscaPonto by remember { mutableStateOf("") }
+        val filtrados = remember(pontos, buscaPonto) {
+            val q = buscaPonto.trim()
+            pontos.mapIndexedNotNull { idx, pt ->
+                if (q.isBlank() ||
+                    pt.tratamento.contains(q, ignoreCase = true) ||
+                    pt.parcela.contains(q, ignoreCase = true) ||
+                    pt.planta.contains(q, ignoreCase = true)
+                ) idx to pt else null
+            }
+        }
+        AlertDialog(
+            onDismissRequest = { mostrarDialogIrParaPlanta = false },
+            title = { Text("Ir para planta da rota", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = buscaPonto,
+                        onValueChange = { buscaPonto = it },
+                        placeholder = { Text("Buscar $labelTratamento, $labelParcela ou $labelPlanta...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(filtrados) { (idx, pt) ->
+                            val sel = idx == indiceAtual
+                            Surface(
+                                onClick = {
+                                    indiceAtual = idx
+                                    mostrarDialogIrParaPlanta = false
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                color = when {
+                                    sel -> Color(0xFFC8E6C9)
+                                    pt.coletado -> Color(0xFFF1F8E9)
+                                    else -> Color(0xFFF7F7F7)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            "#${idx + 1} • $labelParcela ${pt.parcela} • $labelPlanta ${pt.planta}",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = VERDE_ESCURO
+                                        )
+                                        Text(pt.tratamento, fontSize = 11.sp, color = Color(0xFF4E6E52))
+                                    }
+                                    Text(
+                                        if (pt.coletado) "✓ ${pt.resumoResultado}" else "Pendente",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (pt.coletado) VERDE_APP else Color(0xFFE65100)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { mostrarDialogIrParaPlanta = false }) { Text("Fechar") }
+            }
+        )
+    }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -1796,11 +2491,11 @@ fun TelaFormularioFieldBook(
             val progressoRota = if (pontos.isNotEmpty()) coletadasCount.toFloat() / pontos.size.toFloat() else 0f
 
             // Bloco 1: Card Superior Unificado de Navegação Estilo Field Book
-            Card(
+            ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                border = BorderStroke(1.dp, if (pontoAtual.coletado) Color(0xFF81C784) else Color(0xFFDCE7DC))
+                colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
@@ -1811,9 +2506,13 @@ fun TelaFormularioFieldBook(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { mostrarDialogIrParaPlanta = true }
+                        ) {
                             Text(
-                                "Planta ${indiceAtual + 1} de ${pontos.size}  •  Ordem #$ordemExibicao",
+                                "Planta ${indiceAtual + 1} de ${pontos.size}  •  Ordem #$ordemExibicao ▾",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = VERDE_ESCURO
@@ -1845,7 +2544,7 @@ fun TelaFormularioFieldBook(
                             }
                             TextButton(
                                 onClick = { onLimparFormularioClick(); indiceAtual = 0 },
-                                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFC62828)),
+                                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF546E7A)),
                                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Icon(Icons.Default.DeleteSweep, null, modifier = Modifier.size(15.dp))
@@ -1894,6 +2593,30 @@ fun TelaFormularioFieldBook(
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            if (pontoAtual.colunasPlanilha.isNotEmpty()) {
+                                Spacer(Modifier.height(6.dp))
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    pontoAtual.colunasPlanilha.entries.take(6).forEach { (colNome, colVal) ->
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = Color(0xFFEEF3EE)
+                                        ) {
+                                            Text(
+                                                "$colNome: $colVal",
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF3E4E40),
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         FilledTonalIconButton(
@@ -1933,7 +2656,9 @@ fun TelaFormularioFieldBook(
                 situacao = situacaoAtual,
                 onSituacaoChange = { situacaoAtual = it },
                 motivoNaoAvaliavel = motivoAtual,
-                onMotivoChange = { motivoAtual = it }
+                onMotivoChange = { motivoAtual = it },
+                rotuloSemUnidades = templateCultura.rotuloSemUnidades,
+                motivosDisponiveis = templateCultura.motivosSugeridos
             )
 
             BlocoVariaveisExtrasCard(
@@ -1963,7 +2688,7 @@ fun TelaFormularioFieldBook(
                     )
                     situacaoAtual = SituacaoPlanta.NORMAL
                     if (indiceAtual < pontos.size - 1) indiceAtual++
-                    else Toast.makeText(context, "Rota Finalizada!", Toast.LENGTH_SHORT).show()
+                    else Toast.makeText(context, "Rota finalizada!", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1975,48 +2700,54 @@ fun TelaFormularioFieldBook(
                 Icon(Icons.Default.ReportProblem, null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "REGISTRAR NÃO AVALIÁVEL ($motivoAtual)",
-                    fontSize = 12.sp,
+                    "Registrar não avaliável ($motivoAtual)",
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
         } else {
-            Row(
-                Modifier
+            Column(
+                modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                OutlinedButton(
-                    onClick = { launcherGaleria.launch("image/*") },
-                    modifier = Modifier.weight(1f).height(54.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP),
-                    border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
-                    shape = RoundedCornerShape(14.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    Icon(Icons.Default.Image, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("GALERIA", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    OutlinedButton(
+                        onClick = { launcherGaleria.launch("image/*") },
+                        modifier = Modifier.height(40.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP),
+                        border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Galeria", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
                 Button(
                     onClick = { cameraAtiva = true },
-                    modifier = Modifier.weight(1.5f).height(54.dp),
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (situacaoAtual == SituacaoPlanta.SEM_FRUTOS) Color(0xFFEF6C00) else VERDE_APP
                     ),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Icon(Icons.Default.PhotoCamera, null)
-                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         when {
-                            situacaoAtual == SituacaoPlanta.SEM_FRUTOS -> "FOTO PROVA (0)"
-                            pontoAtual.coletado -> "REFAZER FOTO"
-                            else -> "FOTOGRAFAR PLANTA"
+                            situacaoAtual == SituacaoPlanta.SEM_FRUTOS -> "Foto de comprovação (0)"
+                            pontoAtual.coletado -> "Refazer foto da planta"
+                            else -> "Fotografar planta"
                         },
-                        fontSize = 13.sp,
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1
                     )
@@ -2071,7 +2802,8 @@ fun TelaColetaLivreFieldBook(
     onToggleVariavel: ((VariavelExtra, Boolean) -> Unit)? = null,
     onDesativarTodas: (() -> Unit)? = null,
     classificacoesPersonalizadas: List<String>? = null,
-    onAtualizarClassificacoes: ((List<String>) -> Unit)? = null
+    onAtualizarClassificacoes: ((List<String>) -> Unit)? = null,
+    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA
 ) {
     val context = LocalContext.current
 
@@ -2084,7 +2816,9 @@ fun TelaColetaLivreFieldBook(
     var bitmapHCapturado by remember { mutableFloatStateOf(1f) }
 
     var situacaoAtual by rememberSaveable { mutableStateOf(SituacaoPlanta.NORMAL) }
-    var motivoAtual by rememberSaveable { mutableStateOf(MOTIVOS_NAO_AVALIAVEL.first()) }
+    var motivoAtual by rememberSaveable {
+        mutableStateOf(templateCultura.motivosSugeridos.firstOrNull() ?: MOTIVOS_NAO_AVALIAVEL.first())
+    }
     val valoresExtras = remember { mutableStateMapOf<String, String>() }
 
     LaunchedEffect(cameraAtiva, fotoParaRevisao) {
@@ -2120,6 +2854,21 @@ fun TelaColetaLivreFieldBook(
     val idAtual = "${tratVal}_P${pVal}_Pl${plVal}"
     val registroExistente = remember(registrosSalvos.size, idAtual) {
         registrosSalvos.firstOrNull { it.idCompleto.equals(idAtual, ignoreCase = true) }
+    }
+
+    LaunchedEffect(idAtual, registrosSalvos.size) {
+        val salvo = registrosSalvos.firstOrNull { it.idCompleto.equals(idAtual, ignoreCase = true) }
+        valoresExtras.clear()
+        if (salvo != null) {
+            situacaoAtual = salvo.situacaoPlanta
+            motivoAtual = salvo.motivoNaoAvaliavel.ifBlank {
+                templateCultura.motivosSugeridos.firstOrNull() ?: MOTIVOS_NAO_AVALIAVEL.first()
+            }
+            valoresExtras.putAll(salvo.variaveisExtras)
+        } else {
+            situacaoAtual = SituacaoPlanta.NORMAL
+            motivoAtual = templateCultura.motivosSugeridos.firstOrNull() ?: MOTIVOS_NAO_AVALIAVEL.first()
+        }
     }
 
     val launcherGaleria = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -2203,9 +2952,9 @@ fun TelaColetaLivreFieldBook(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             // Card 1: Identificação no Ensaio
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                border = BorderStroke(1.dp, Color(0xFFDCE7DC)),
+            ElevatedCard(
+                colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
                 shape = RoundedCornerShape(14.dp)
             ) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -2215,7 +2964,7 @@ fun TelaColetaLivreFieldBook(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "Identificação da Planta",
+                            "Identificação da planta",
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             color = VERDE_ESCURO
@@ -2341,7 +3090,9 @@ fun TelaColetaLivreFieldBook(
                 situacao = situacaoAtual,
                 onSituacaoChange = { situacaoAtual = it },
                 motivoNaoAvaliavel = motivoAtual,
-                onMotivoChange = { motivoAtual = it }
+                onMotivoChange = { motivoAtual = it },
+                rotuloSemUnidades = templateCultura.rotuloSemUnidades,
+                motivosDisponiveis = templateCultura.motivosSugeridos
             )
 
             BlocoVariaveisExtrasCard(
@@ -2383,43 +3134,49 @@ fun TelaColetaLivreFieldBook(
             ) {
                 Icon(Icons.Default.ReportProblem, null)
                 Spacer(Modifier.width(8.dp))
-                Text("REGISTRAR PLANTA NÃO AVALIÁVEL ($motivoAtual)", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text("Registrar não avaliável ($motivoAtual)", fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
         } else {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                OutlinedButton(
-                    onClick = { launcherGaleria.launch("image/*") },
-                    modifier = Modifier.weight(1f).height(54.dp),
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    Icon(Icons.Default.Image, null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("GALERIA", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    OutlinedButton(
+                        onClick = { launcherGaleria.launch("image/*") },
+                        modifier = Modifier.height(40.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = VERDE_APP),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Galeria", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
                 Button(
                     onClick = { cameraAtiva = true },
-                    modifier = Modifier.weight(1.5f).height(54.dp),
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (situacaoAtual == SituacaoPlanta.SEM_FRUTOS) Color(0xFFEF6C00) else VERDE_APP
                     )
                 ) {
-                    Icon(Icons.Default.PhotoCamera, null)
-                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         when {
-                            situacaoAtual == SituacaoPlanta.SEM_FRUTOS -> "FOTO PROVA (0)"
-                            registroExistente != null -> "REFAZER FOTO"
-                            else -> "FOTOGRAFAR PLANTA"
+                            situacaoAtual == SituacaoPlanta.SEM_FRUTOS -> "Foto de comprovação (0)"
+                            registroExistente != null -> "Refazer foto da planta"
+                            else -> "Fotografar planta"
                         },
-                        fontSize = 13.sp,
+                        fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1
                     )
@@ -2439,13 +3196,10 @@ private fun CardContadorInline(
     onIncrement: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(
+    Surface(
         modifier = modifier,
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (destaque) Color(0xFFE8F5E9) else Color(0xFFF4F9F4)
-        ),
-        border = BorderStroke(1.dp, if (destaque) VERDE_APP else Color(0xFFC8E6C9))
+        color = if (destaque) Color(0xFFE8F5E9) else Color(0xFFF6F9F6)
     ) {
         Column(
             modifier = Modifier
@@ -2455,10 +3209,10 @@ private fun CardContadorInline(
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Text(
-                titulo.uppercase(),
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color = VERDE_APP,
+                titulo,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = VERDE_ESCURO,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -2467,8 +3221,8 @@ private fun CardContadorInline(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                IconButton(onClick = onDecrement, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Default.RemoveCircle, "Diminuir $titulo", tint = Color(0xFFC62828), modifier = Modifier.size(28.dp))
+                IconButton(onClick = onDecrement, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Default.RemoveCircle, "Diminuir $titulo", tint = Color(0xFF546E7A), modifier = Modifier.size(28.dp))
                 }
                 Text(
                     "$valor",
@@ -2476,7 +3230,7 @@ private fun CardContadorInline(
                     fontWeight = FontWeight.ExtraBold,
                     color = VERDE_ESCURO
                 )
-                IconButton(onClick = onIncrement, modifier = Modifier.size(34.dp)) {
+                IconButton(onClick = onIncrement, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Default.AddCircle, "Aumentar $titulo", tint = VERDE_APP, modifier = Modifier.size(28.dp))
                 }
             }
@@ -2540,19 +3294,17 @@ fun TelaConfiguracaoEnsaio(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("Configuração do Ensaio e Variáveis", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = VERDE_ESCURO)
-
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFE0E0E0)),
-            shape = RoundedCornerShape(12.dp)
+        ElevatedCard(
+            colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+            shape = RoundedCornerShape(14.dp)
         ) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("1. Identificação da Coleta", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_APP)
+                Text("Identificação da coleta", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_ESCURO)
                 OutlinedTextField(
                     value = nomeTemp,
                     onValueChange = { nomeTemp = it },
-                    label = { Text("Nome da Coleta / Experimento") },
+                    label = { Text("Nome da coleta ou experimento") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -2562,29 +3314,32 @@ fun TelaConfiguracaoEnsaio(
                             val limpo = nomeTemp.trim()
                             if (limpo.isNotBlank()) onSalvarNomeColeta(limpo)
                         },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).heightIn(min = 52.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
                     ) {
-                        Text("SALVAR NOME", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Salvar nome", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     OutlinedButton(
                         onClick = onIniciarNovaColeta,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFC62828))
+                        modifier = Modifier.weight(1f).heightIn(min = 52.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, Color(0xFFB0BEC5)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF455A64))
                     ) {
-                        Text("NOVA COLETA", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Nova coleta", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
         }
 
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFE0E0E0)),
-            shape = RoundedCornerShape(12.dp)
+        ElevatedCard(
+            colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+            shape = RoundedCornerShape(14.dp)
         ) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("2. Variáveis Fixas (Navegação)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_APP)
+                Text("Campos fixos (navegação)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_ESCURO)
                 OutlinedTextField(
                     value = l1Temp,
                     onValueChange = { l1Temp = it },
@@ -2633,57 +3388,60 @@ fun TelaConfiguracaoEnsaio(
                             autoAvTemp
                         )
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
                 ) {
-                    Text("SALVAR CAMPOS E NAVEGAÇÃO", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Salvar campos e navegação", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFE0E0E0)),
-            shape = RoundedCornerShape(12.dp)
+        ElevatedCard(
+            colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+            shape = RoundedCornerShape(14.dp)
         ) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("3. Planilha de Rota (.xlsx / .csv)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_APP)
+                Text("Planilha de rota (.xlsx ou .csv)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_ESCURO)
                 Text(
-                    if (pontosRotaCount > 0) "$pontosRotaCount pontos carregados no Modo Rota."
-                    else "Nenhuma planilha carregada para navegação sequencial.",
+                    if (pontosRotaCount > 0) "$pontosRotaCount pontos carregados no Formulário."
+                    else "Nenhuma planilha carregada.",
                     fontSize = 12.sp,
-                    color = Color.Gray
+                    color = Color(0xFF5F6F61)
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = onImportarPlanilha,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).heightIn(min = 52.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = VERDE_APP)
                     ) {
-                        Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text(if (pontosRotaCount > 0) "TROCAR" else "IMPORTAR", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text(if (pontosRotaCount > 0) "Trocar" else "Importar", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     if (pontosRotaCount > 0) {
                         OutlinedButton(
                             onClick = onLimparPlanilha,
-                            modifier = Modifier.weight(0.75f),
+                            modifier = Modifier.weight(0.75f).heightIn(min = 52.dp),
+                            shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFC62828))
                         ) {
-                            Text("LIMPAR", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text("Limpar", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
             }
         }
 
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFE0E0E0)),
-            shape = RoundedCornerShape(12.dp)
+        ElevatedCard(
+            colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp),
+            shape = RoundedCornerShape(14.dp)
         ) {
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("4. Variáveis Extras (Field Book)", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_APP)
+                Text("Anotações extras", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = VERDE_ESCURO)
                 ConteudoGerenciarVariaveisExtras(
                     variaveis = variaveisExtras,
                     onToggleAtiva = onToggleVariavelAtiva,

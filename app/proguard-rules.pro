@@ -16,6 +16,8 @@
 # debugging stack traces.
 #-keepattributes SourceFile,LineNumberTable
 
+-keepattributes Signature,InnerClasses
+
 # Mantém classes JNI do TensorFlow Lite, CameraX e modelos serializáveis no build Release (Google Play AAB)
 -keep class org.tensorflow.lite.** { *; }
 -dontwarn org.tensorflow.lite.**
@@ -25,3 +27,4 @@
 -keep class androidx.camera.** { *; }
 -keep class com.example.myapplication.data.** { *; }
 -keep class com.example.myapplication.userinterface.CaixaAuditavel { *; }
+-keep class com.example.myapplication.userinterface.util.PersistenciaLocalRegistros$* { *; }

@@ -26,11 +26,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.myapplication.data.PontoFormulario
 import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
+import com.example.myapplication.data.TemplateCultura
 import com.example.myapplication.data.VariavelExtra
+import com.example.myapplication.data.calcularResumoAgronomico
 import com.example.myapplication.userinterface.util.compartilharArquivoViaAndroid
 import com.example.myapplication.userinterface.util.exportarCSVBreedAI
+import com.example.myapplication.userinterface.util.exportarPacoteZipBreedAI
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 @Composable
@@ -45,9 +52,13 @@ fun TelaEdicaoDados(
     onEditarCaixas: (RegistroColeta) -> Unit,
     onAtualizarDadosRegistro: (RegistroColeta) -> Unit,
     onExcluirRegistro: (RegistroColeta) -> Unit,
-    classesModeloExportacao: List<String> = emptyList()
+    classesModeloExportacao: List<String> = emptyList(),
+    pontosFormulario: List<PontoFormulario> = emptyList(),
+    incluirPercentualClassesCsv: Boolean = false,
+    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val verde = Color(0xFF2E7D32)
 
     val classesParaCsv = remember(classesModeloExportacao, registros.toList()) {
@@ -59,6 +70,8 @@ fun TelaEdicaoDados(
     }
 
     var filtroSituacao by remember { mutableStateOf<SituacaoPlanta?>(null) }
+    var textoBusca by remember { mutableStateOf("") }
+    var gerandoZip by remember { mutableStateOf(false) }
     var registroParaExcluir by remember { mutableStateOf<RegistroColeta?>(null) }
     var registroParaEditarDados by remember { mutableStateOf<RegistroColeta?>(null) }
 
@@ -66,9 +79,16 @@ fun TelaEdicaoDados(
         variaveisExtrasConfig.filter { it.ativa }
     }
 
-    val registrosFiltrados = remember(registros.toList(), filtroSituacao) {
+    val registrosFiltrados = remember(registros.toList(), filtroSituacao, textoBusca) {
         val base = registros.reversed()
-        if (filtroSituacao == null) base else base.filter { it.situacaoPlanta == filtroSituacao }
+        val porSituacao = if (filtroSituacao == null) base else base.filter { it.situacaoPlanta == filtroSituacao }
+        val q = textoBusca.trim()
+        if (q.isBlank()) porSituacao else porSituacao.filter { reg ->
+            reg.tratamento.contains(q, ignoreCase = true) ||
+                reg.parcela.contains(q, ignoreCase = true) ||
+                reg.planta.contains(q, ignoreCase = true) ||
+                reg.idCompleto.contains(q, ignoreCase = true)
+        }
     }
 
     if (registroParaExcluir != null) {
@@ -115,7 +135,9 @@ fun TelaEdicaoDados(
                         situacao = situacaoEdit,
                         onSituacaoChange = { situacaoEdit = it },
                         motivoNaoAvaliavel = motivoEdit,
-                        onMotivoChange = { motivoEdit = it }
+                        onMotivoChange = { motivoEdit = it },
+                        rotuloSemUnidades = templateCultura.rotuloSemUnidades,
+                        motivosDisponiveis = templateCultura.motivosSugeridos
                     )
                     if (exigeFotoAusente) {
                         Text(
@@ -158,7 +180,7 @@ fun TelaEdicaoDados(
                         registroParaEditarDados = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = verde)
-                ) { Text("SALVAR") }
+                ) { Text("Salvar") }
             },
             dismissButton = {
                 TextButton(onClick = { registroParaEditarDados = null }) { Text("Cancelar") }
@@ -172,19 +194,16 @@ fun TelaEdicaoDados(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        val totalContado = registros.sumOf { it.totalObjetos }
-        val mediaPorPlanta = if (registros.isNotEmpty()) {
-            String.format(Locale.US, "%.1f", totalContado.toDouble() / registros.size)
-        } else {
-            "0.0"
-        }
+        val resumo = remember(registros.toList()) { calcularResumoAgronomico(registros) }
+        val mediaPorPlanta = String.format(Locale.US, "%.1f", resumo.mediaPorPlantaValida)
+        val estandeTexto = "${resumo.estandePercentual.toInt()}%"
 
-        // Card Superior de Resumo do Ensaio + Exportação CSV
-        Card(
+        // Card Superior de Resumo do Ensaio + Exportação CSV / ZIP
+        ElevatedCard(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+            colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
         ) {
             Column(
                 modifier = Modifier.padding(12.dp),
@@ -194,9 +213,10 @@ fun TelaEdicaoDados(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    IndicadorResumoEnsaio(titulo = "Plantas", valor = "${registros.size}", modifier = Modifier.weight(1f))
-                    IndicadorResumoEnsaio(titulo = "Total Contado", valor = "$totalContado", modifier = Modifier.weight(1f))
-                    IndicadorResumoEnsaio(titulo = "Média", valor = mediaPorPlanta, modifier = Modifier.weight(1f))
+                    IndicadorResumoEnsaio(titulo = "Plantas", valor = "${resumo.totalRegistros}", modifier = Modifier.weight(1f))
+                    IndicadorResumoEnsaio(titulo = "Total", valor = "${resumo.totalObjetos}", modifier = Modifier.weight(1f))
+                    IndicadorResumoEnsaio(titulo = "Média vivas", valor = mediaPorPlanta, modifier = Modifier.weight(1f))
+                    IndicadorResumoEnsaio(titulo = "Estande", valor = estandeTexto, modifier = Modifier.weight(1f))
                 }
 
                 HorizontalDivider(color = Color(0xFFEEF3EE))
@@ -218,19 +238,21 @@ fun TelaEdicaoDados(
                                     labelParcela = labelParcela,
                                     labelPlanta = labelPlanta,
                                     variaveisAtivas = variaveisAtivas,
-                                    classesModeloExportacao = classesParaCsv
+                                    classesModeloExportacao = classesParaCsv,
+                                    pontosFormulario = pontosFormulario,
+                                    incluirPercentualClasses = incluirPercentualClassesCsv
                                 )
                             }
                         },
-                        enabled = registros.isNotEmpty(),
-                        modifier = Modifier.weight(1f).height(44.dp),
+                        enabled = registros.isNotEmpty() && !gerandoZip,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = verde),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 8.dp)
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
                     ) {
                         Icon(Icons.Default.FileDownload, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("BAIXAR CSV", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                        Text("Baixar CSV", fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
                     }
 
                     OutlinedButton(
@@ -243,7 +265,9 @@ fun TelaEdicaoDados(
                                 labelParcela = labelParcela,
                                 labelPlanta = labelPlanta,
                                 variaveisAtivas = variaveisAtivas,
-                                classesModeloExportacao = classesParaCsv
+                                classesModeloExportacao = classesParaCsv,
+                                pontosFormulario = pontosFormulario,
+                                incluirPercentualClasses = incluirPercentualClassesCsv
                             )
                             if (csvFile != null) {
                                 compartilharArquivoViaAndroid(
@@ -254,18 +278,87 @@ fun TelaEdicaoDados(
                                 )
                             }
                         },
-                        enabled = registros.isNotEmpty(),
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
+                        enabled = registros.isNotEmpty() && !gerandoZip,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = verde),
-                        contentPadding = PaddingValues(horizontal = 8.dp)
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
                     ) {
                         Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("COMPARTILHAR CSV", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                        Text("Compartilhar", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        if (registros.isEmpty() || gerandoZip) return@OutlinedButton
+                        gerandoZip = true
+                        val snapshotRegs = registros.toList()
+                        val snapshotPontos = pontosFormulario.toList()
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val zip = exportarPacoteZipBreedAI(
+                                context = context,
+                                registros = snapshotRegs,
+                                coletaNome = coletaNome,
+                                labelTratamento = labelTratamento,
+                                labelParcela = labelParcela,
+                                labelPlanta = labelPlanta,
+                                variaveisAtivas = variaveisAtivas,
+                                classesModeloExportacao = classesParaCsv,
+                                pontosFormulario = snapshotPontos,
+                                incluirPercentualClasses = incluirPercentualClassesCsv
+                            )
+                            withContext(Dispatchers.Main) {
+                                gerandoZip = false
+                                if (zip != null) {
+                                    compartilharArquivoViaAndroid(
+                                        context = context,
+                                        arquivo = zip,
+                                        mimeType = "application/zip",
+                                        tituloChooser = "Compartilhar Pacote Completo ($coletaNome)"
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    enabled = registros.isNotEmpty() && !gerandoZip,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF1B5E20)),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    if (gerandoZip) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = verde, strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Empacotando fotos + CSV + labels...", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Icon(Icons.Default.FolderZip, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Pacote ZIP (CSV + Fotos + Labels YOLO)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
                     }
                 }
             }
+        }
+
+        if (registros.isNotEmpty()) {
+            OutlinedTextField(
+                value = textoBusca,
+                onValueChange = { textoBusca = it },
+                placeholder = { Text("Buscar $labelTratamento, $labelParcela ou $labelPlanta...", fontSize = 13.sp) },
+                leadingIcon = { Icon(Icons.Default.Search, null, tint = verde, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    if (textoBusca.isNotEmpty()) {
+                        IconButton(onClick = { textoBusca = "" }) {
+                            Icon(Icons.Default.Close, "Limpar busca", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
         }
 
         // Filtros rápidos com rótulos curtos sem cortar
@@ -284,7 +377,7 @@ fun TelaEdicaoDados(
                 val qtd = registros.count { it.situacaoPlanta == sit }
                 val rotuloFiltro = when (sit) {
                     SituacaoPlanta.NORMAL -> "Normal"
-                    SituacaoPlanta.SEM_FRUTOS -> "S/ Frutos"
+                    SituacaoPlanta.SEM_FRUTOS -> templateCultura.rotuloSemUnidades
                     SituacaoPlanta.NAO_AVALIAVEL -> "N. Aval."
                 }
                 FilterChip(
@@ -310,11 +403,11 @@ fun TelaEdicaoDados(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(registrosFiltrados, key = { "${it.idCompleto}_${it.data}" }) { reg ->
-                    Card(
+                    ElevatedCard(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
-                        border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+                        colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
                     ) {
                         Row(
                             modifier = Modifier.padding(10.dp),
@@ -363,8 +456,8 @@ fun TelaEdicaoDados(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 val resumoSituacao = when (reg.situacaoPlanta) {
-                                    SituacaoPlanta.NORMAL -> "✓ ${reg.totalObjetos} frutos/objetos"
-                                    SituacaoPlanta.SEM_FRUTOS -> "Sem frutos (0)"
+                                    SituacaoPlanta.NORMAL -> "✓ ${reg.totalObjetos} ${templateCultura.unidadePlural.lowercase(Locale.ROOT)}"
+                                    SituacaoPlanta.SEM_FRUTOS -> "${templateCultura.rotuloSemUnidades} (0)"
                                     SituacaoPlanta.NAO_AVALIAVEL -> "Não aval.: ${reg.motivoNaoAvaliavel}"
                                 }
                                 Text(

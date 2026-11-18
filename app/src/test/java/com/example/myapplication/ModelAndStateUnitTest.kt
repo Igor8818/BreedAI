@@ -1,6 +1,7 @@
 package com.example.myapplication
 
 import android.net.Uri
+import com.example.myapplication.data.LABELS_DOENCA_CACAU
 import com.example.myapplication.data.MODELOS_EMBUTIDOS
 import com.example.myapplication.data.MOTIVOS_NAO_AVALIAVEL
 import com.example.myapplication.data.ModelConfig
@@ -8,8 +9,13 @@ import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
 import com.example.myapplication.data.TipoVariavelExtra
 import com.example.myapplication.data.VariavelExtra
+import com.example.myapplication.data.calcularResumoAgronomico
 import com.example.myapplication.data.variaveisExtrasIniciais
 import com.example.myapplication.userinterface.CaixaAuditavel
+import com.example.myapplication.userinterface.DetEstilizada
+import com.example.myapplication.userinterface.deveUsarParDetectoresSecundario
+import com.example.myapplication.userinterface.fundirContagemEDiagnosticoBreedAI
+import com.example.myapplication.userinterface.rotuloPassaFiltroModelo
 import com.example.myapplication.userinterface.util.ImportadorPlanilhaUniversal
 import com.example.myapplication.userinterface.util.ObjectDetectorHelper
 import org.junit.Assert.assertEquals
@@ -405,5 +411,119 @@ class ModelAndStateUnitTest {
         assertNotEquals(chaveBanana, chaveDoenca)
         assertNotEquals(chaveBanana, chaveCustom)
         assertEquals("custom_sigatoka_v2.tflite", chaveCustom)
+    }
+
+    @Test
+    fun `testResumoAgronomicoExcluiNaoAvaliavelDaMedia`() {
+        val mockUri = Uri.EMPTY ?: Mockito.mock(Uri::class.java)
+        val registros = listOf(
+            RegistroColeta(
+                uri = mockUri,
+                idCompleto = "T1_P1_Pl1",
+                coletaNome = "Ensaio_1",
+                tratamento = "T1",
+                parcela = "1",
+                planta = "1",
+                situacaoPlanta = SituacaoPlanta.NORMAL,
+                diagnostico = "10",
+                data = "2026-11-17 09:00:00",
+                lat = 0.0,
+                lng = 0.0,
+                totalObjetos = 10,
+                variaveisExtras = emptyMap()
+            ),
+            RegistroColeta(
+                uri = mockUri,
+                idCompleto = "T1_P1_Pl2",
+                coletaNome = "Ensaio_1",
+                tratamento = "T1",
+                parcela = "1",
+                planta = "2",
+                situacaoPlanta = SituacaoPlanta.SEM_FRUTOS,
+                diagnostico = "0",
+                data = "2026-11-17 09:05:00",
+                lat = 0.0,
+                lng = 0.0,
+                totalObjetos = 0,
+                variaveisExtras = emptyMap()
+            ),
+            RegistroColeta(
+                uri = mockUri,
+                idCompleto = "T1_P1_Pl3",
+                coletaNome = "Ensaio_1",
+                tratamento = "T1",
+                parcela = "1",
+                planta = "3",
+                situacaoPlanta = SituacaoPlanta.NAO_AVALIAVEL,
+                motivoNaoAvaliavel = "Planta morta",
+                diagnostico = "Não avaliável",
+                data = "2026-11-17 09:10:00",
+                lat = 0.0,
+                lng = 0.0,
+                totalObjetos = 0,
+                variaveisExtras = emptyMap()
+            )
+        )
+
+        val resumo = calcularResumoAgronomico(registros)
+        assertEquals(3, resumo.totalRegistros)
+        assertEquals(2, resumo.plantasValidas)
+        assertEquals(1, resumo.plantasNaoAvaliaveis)
+        assertEquals(10, resumo.totalObjetos)
+        assertEquals(5.0, resumo.mediaPorPlantaValida, 0.001)
+        assertEquals(66.666, resumo.estandePercentual, 0.05)
+    }
+
+    @Test
+    fun `testMaxResultadosSuportaAltaDensidadeAte300`() {
+        val cfg = ModelConfig(
+            modeloExternoNome = "Espigas Milho",
+            maxResultados = 250,
+            incluirPercentualClassesCsv = true
+        )
+        val json = cfg.toManifestJson()
+        val parsed = ModelConfig.fromManifestJson(json)
+
+        assertNotNull(parsed)
+        assertEquals(250, parsed!!.maxResultados)
+        assertTrue(parsed.incluirPercentualClassesCsv)
+
+        val clamped = ModelConfig.fromManifestJson("""{"maxResultados": 999}""")
+        assertNotNull(clamped)
+        assertEquals(300, clamped!!.maxResultados)
+    }
+
+    @Test
+    fun `testCacauDoencasRunsDirectlyInLiveCameraAndMatchesAccentedFilters`() {
+        assertFalse(
+            deveUsarParDetectoresSecundario(
+                ModelConfig(modeloSelecionado = MODELOS_EMBUTIDOS[1], usarModeloSecundario = false)
+            )
+        )
+        assertTrue(
+            deveUsarParDetectoresSecundario(
+                ModelConfig(modeloSelecionado = MODELOS_EMBUTIDOS[1], usarModeloSecundario = true)
+            )
+        )
+        assertTrue(
+            rotuloPassaFiltroModelo("PodridaoParda", listOf("Podridão"), LABELS_DOENCA_CACAU)
+        )
+        assertTrue(
+            rotuloPassaFiltroModelo("apple", listOf("Maçã"), listOf("person", "banana", "apple"))
+        )
+    }
+
+    @Test
+    fun `testFundirContagemEDiagnostico_KeepsUnpairedDiseasedPodAt026Confidence`() {
+        val contagem = listOf(
+            DetEstilizada(0.05f, 0.05f, 0.20f, 0.25f, 0.88f, "cacau")
+        )
+        val secundario = listOf(
+            DetEstilizada(0.60f, 0.55f, 0.85f, 0.90f, 0.26f, "PodridaoParda")
+        )
+
+        val result = fundirContagemEDiagnosticoBreedAI(contagem, secundario)
+        assertEquals(2, result.size)
+        assertTrue(result.any { it.rotulo == "PodridaoParda" && kotlin.math.abs(it.confianca - 0.26f) < 0.001f })
     }
 }

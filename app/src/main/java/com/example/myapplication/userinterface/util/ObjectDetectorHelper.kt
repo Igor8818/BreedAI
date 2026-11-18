@@ -23,9 +23,12 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.ZipInputStream
 import kotlin.math.exp
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Helper de detecção universal que usa APENAS o Interpreter direto do TFLite.
@@ -58,6 +61,7 @@ class ObjectDetectorHelper(
     private enum class ModelArchitecture {
         SSD_TASK_VISION,  // Modelo SSD/EfficientDet com metadados oficiais (Google Task Vision)
         SSD_POST_PROCESS, // Modelo de 4 tensores de saída via Interpreter direto
+        SSD_RAW_ANCHORS,  // Modelo SSD/EfficientDet de 2 tensores de saída (scores + anchor deltas)
         YOLO_RAW,         // Modelo de saída única com âncoras brutas
         YOLO_END2END_NMS  // Modelo YOLO exportado com nms=True ([1, N, 6])
     }
@@ -68,6 +72,7 @@ class ObjectDetectorHelper(
     private var inputWidth = 640
     private var inputHeight = 640
     private var inputDataType = DataType.FLOAT32
+    private var isInputChannelFirst = false
     private var quantByteLut: ByteArray? = null
 
     // Configuração de saída para YOLO
@@ -88,6 +93,7 @@ class ObjectDetectorHelper(
     private var reusableFloatOut: Array<Array<FloatArray>>? = null
     private var reusableByteOut: Array<Array<ByteArray>>? = null
     private var reusableDeqOut: Array<FloatArray>? = null
+    private var reusableExtraOutputBuf: ByteBuffer? = null
     private val letterboxMatrix = Matrix()
     private val letterboxPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
@@ -99,10 +105,34 @@ class ObjectDetectorHelper(
     private var ssdCountIndex = 3
     private var ssdAmbiguousShape2Pair: Pair<Int, Int>? = null
 
+    // Índices, dimensões e buffers reutilizáveis para SSD_RAW_ANCHORS (2 saídas: scores + box deltas)
+    private var rawBoxTensorIdx = 1
+    private var rawScoreTensorIdx = 0
+    private var rawAnchorCount = 0
+    private var rawClassCount = 0
+    private var rawBoxOutputType = DataType.FLOAT32
+    private var rawBoxQuantScale = 1f
+    private var rawBoxQuantZeroPoint = 0
+    private var rawScoreOutputType = DataType.FLOAT32
+    private var rawScoreQuantScale = 1f
+    private var rawScoreQuantZeroPoint = 0
+    private var cachedAnchorsW = 0
+    private var cachedAnchorsH = 0
+    private var cachedEfficientDetAnchors: Array<FloatArray>? = null
+    private var reusableRawScoresFloat: Array<Array<FloatArray>>? = null
+    private var reusableRawBoxesFloat: Array<Array<FloatArray>>? = null
+    private var reusableRawScoresByte: Array<Array<ByteArray>>? = null
+    private var reusableRawBoxesByte: Array<Array<ByteArray>>? = null
+    private var reusableRawScoresDeq: Array<FloatArray>? = null
+    private var reusableRawBoxesDeq: Array<FloatArray>? = null
+
     // Configurações para YOLO
     private var yoloNumAnchors = 8400
     private var yoloNumClasses = 1
     private var yoloTransposed = true
+    private var yoloHasObjectness = false
+    private var yoloExtraChannels = 0
+    private var modelTask = "detect"
 
     // Rótulos do modelo
     private val modelLabels = mutableListOf<String>()
@@ -161,37 +191,80 @@ class ObjectDetectorHelper(
             }
             interpreter = Interpreter(file, options)
 
-            // Inspeciona tensor de entrada
+            // Inspeciona tensor de entrada (suporta NHWC [1,H,W,3] e NCHW [1,3,H,W])
             val inTensor = interpreter!!.getInputTensor(0)
             val inShape = inTensor.shape()
             inputDataType = inTensor.dataType()
             quantByteLut = buildQuantLutIfNeeded(inputDataType, inTensor.quantizationParams())
-            inputHeight = if (inShape.size >= 2 && inShape[1] > 0) inShape[1] else 640
-            inputWidth = if (inShape.size >= 3 && inShape[2] > 0) inShape[2] else 640
+            isInputChannelFirst = (inShape.size == 4 && inShape[1] == 3 && inShape[3] > 3)
+            if (isInputChannelFirst) {
+                inputHeight = if (inShape[2] > 0) inShape[2] else 640
+                inputWidth = if (inShape[3] > 0) inShape[3] else 640
+            } else {
+                inputHeight = if (inShape.size >= 2 && inShape[1] > 0) inShape[1] else 640
+                inputWidth = if (inShape.size >= 3 && inShape[2] > 0) inShape[2] else 640
+            }
 
             val numOutputs = interpreter!!.outputTensorCount
-            Log.d("Detector", "Modelo carregado: input=${inShape.toList()} type=$inputDataType outputs=$numOutputs size=${file.length()}")
+            Log.d("Detector", "Modelo carregado: input=${inShape.toList()} nchw=$isInputChannelFirst type=$inputDataType outputs=$numOutputs size=${file.length()}")
 
-            // Tenta extrair rótulos embutidos (ZIP Metadata ou FlatBuffer Ultralytics)
+            // Tenta extrair rótulos embutidos (ZIP Metadata ou FlatBuffer Ultralytics) e task
             extractLabelsFromModelFile(file)
+            modelTask = extrairTaskDeArquivo(file) ?: "detect"
 
-            if (numOutputs >= 4) {
-                identifySsdOutputs()
+            val isTwoOutSsd = numOutputs == 2 && isTwoOutputBoxAndScoresDetector(
+                interpreter!!.getOutputTensor(0).shape(),
+                interpreter!!.getOutputTensor(1).shape()
+            )
+
+            if (numOutputs >= 4 || isTwoOutSsd) {
+                if (numOutputs >= 4) {
+                    identifySsdOutputs()
+                } else {
+                    configureTwoOutputSsdIndices()
+                }
+                val allowList = if (customLabels.isNotEmpty() && modelLabels.isNotEmpty()) {
+                    modelLabels.filter { m ->
+                        m.isNotBlank() && m != "???" &&
+                            customLabels.any { c -> labelEquivalente(c, m) }
+                    }.distinct()
+                } else {
+                    emptyList()
+                }
                 val tvDet = try {
-                    val tvOpts = ObjectDetector.ObjectDetectorOptions.builder()
+                    val tvOptsBuilder = ObjectDetector.ObjectDetectorOptions.builder()
                         .setBaseOptions(BaseOptions.builder().setNumThreads(3).build())
-                        .setScoreThreshold(min(scoreThreshold, 0.15f))
+                        .setScoreThreshold(min(scoreThreshold, 0.10f))
                         .setMaxResults(max(maxResults, 25))
-                        .build()
-                    ObjectDetector.createFromFileAndOptions(file, tvOpts)
+                    if (allowList.isNotEmpty()) {
+                        tvOptsBuilder.setLabelAllowList(allowList)
+                    }
+                    ObjectDetector.createFromFileAndOptions(file, tvOptsBuilder.build())
                 } catch (t: Throwable) {
-                    Log.w("Detector", "TaskVision indisponível (${t.message}), usando Interpreter fallback")
-                    null
+                    if (allowList.isNotEmpty()) {
+                        try {
+                            val fallbackOpts = ObjectDetector.ObjectDetectorOptions.builder()
+                                .setBaseOptions(BaseOptions.builder().setNumThreads(3).build())
+                                .setScoreThreshold(min(scoreThreshold, 0.10f))
+                                .setMaxResults(max(maxResults, 25))
+                                .build()
+                            ObjectDetector.createFromFileAndOptions(file, fallbackOpts)
+                        } catch (t2: Throwable) {
+                            Log.w("Detector", "TaskVision indisponível (${t2.message}), usando Interpreter fallback")
+                            null
+                        }
+                    } else {
+                        Log.w("Detector", "TaskVision indisponível (${t.message}), usando Interpreter fallback")
+                        null
+                    }
                 }
                 if (tvDet != null) {
                     taskObjectDetector = tvDet
                     architecture = ModelArchitecture.SSD_TASK_VISION
-                    Log.d("Detector", "Arquitetura identificada: SSD TaskVision Metadata ($inputWidth x $inputHeight)")
+                    Log.d("Detector", "Arquitetura identificada: SSD TaskVision Metadata ($inputWidth x $inputHeight, allowList=$allowList)")
+                } else if (isTwoOutSsd) {
+                    architecture = ModelArchitecture.SSD_RAW_ANCHORS
+                    Log.d("Detector", "Arquitetura identificada: SSD Raw Anchors (anchors=$rawAnchorCount, classes=$rawClassCount, scoreIdx=$rawScoreTensorIdx, boxIdx=$rawBoxTensorIdx)")
                 } else {
                     architecture = ModelArchitecture.SSD_POST_PROCESS
                     Log.d("Detector", "Arquitetura identificada: SSD (boxes=$ssdBoxIndex, classes=$ssdClassIndex, scores=$ssdScoreIndex, count=$ssdCountIndex, maxDets=$ssdNumDetections)")
@@ -203,36 +276,63 @@ class ObjectDetectorHelper(
                 val outQuant = outTensor.quantizationParams()
                 outQuantScale = if (outQuant.scale > 0f) outQuant.scale else 1f
                 outQuantZeroPoint = outQuant.zeroPoint
-                Log.d("Detector", "YOLO outShape=${outShape.toList()} outType=$outputDataType scale=$outQuantScale zp=$outQuantZeroPoint")
+                Log.d("Detector", "YOLO outShape=${outShape.toList()} outType=$outputDataType scale=$outQuantScale zp=$outQuantZeroPoint task=$modelTask")
 
-                if (outShape.size == 3 && outShape[2] == 6 && outShape[1] in 1..1000) {
+                var maskChannels = 0
+                if (numOutputs == 2) {
+                    val outShape1 = interpreter!!.getOutputTensor(1).shape()
+                    if (outShape1.size == 4) {
+                        maskChannels = when {
+                            outShape1[3] in 1..128 && outShape1[1] > 8 -> outShape1[3]
+                            outShape1[1] in 1..128 && outShape1[3] > 8 -> outShape1[1]
+                            else -> 32
+                        }
+                    }
+                }
+
+                if (numOutputs == 1 && outShape.size == 3 && outShape[2] == 6 && outShape[1] in 1..1000) {
                     architecture = ModelArchitecture.YOLO_END2END_NMS
                     yoloTransposed = false
+                    yoloHasObjectness = false
+                    yoloExtraChannels = 0
                     yoloNumAnchors = outShape[1]
                     yoloNumClasses = max(1, modelLabels.size.coerceAtLeast(customLabels.size))
                 } else {
                     architecture = ModelArchitecture.YOLO_RAW
+                    val totalChannels: Int
                     when {
-                        // [1, 4+C, anchors] (ex: YOLOv8 padrão 1x5x8400)
-                        outShape.size == 3 && outShape[1] in 5..300 && outShape[2] > outShape[1] -> {
+                        // [1, canais, anchors] (ex: YOLOv8 padrão 1x5x8400 ou YOLO-seg 1x37x8400)
+                        outShape.size == 3 && outShape[1] in 5..400 && outShape[2] > outShape[1] -> {
                             yoloTransposed = true
-                            yoloNumClasses = outShape[1] - 4
+                            totalChannels = outShape[1]
                             yoloNumAnchors = outShape[2]
                         }
-                        // [1, anchors, 4+C]
-                        outShape.size == 3 && outShape[2] in 5..300 && outShape[1] > outShape[2] -> {
+                        // [1, anchors, canais] (ex: YOLOv5 1x25200x6)
+                        outShape.size == 3 && outShape[2] in 5..400 && outShape[1] > outShape[2] -> {
                             yoloTransposed = false
                             yoloNumAnchors = outShape[1]
-                            yoloNumClasses = outShape[2] - 4
+                            totalChannels = outShape[2]
                         }
                         else -> {
                             yoloTransposed = true
                             yoloNumAnchors = if (outShape.size >= 3) outShape[2] else 8400
-                            yoloNumClasses = if (outShape.size >= 2) max(1, outShape[1] - 4) else 1
+                            totalChannels = if (outShape.size >= 2) outShape[1] else 5
                         }
                     }
+
+                    yoloExtraChannels = when {
+                        maskChannels > 0 && totalChannels > 4 + maskChannels -> maskChannels
+                        modelTask == "obb" && totalChannels > 5 -> 1
+                        else -> 0
+                    }
+                    yoloHasObjectness = yoloExtraChannels == 0 && modelTask != "obb" && (
+                        (modelLabels.isNotEmpty() && totalChannels == 5 + modelLabels.size) ||
+                        (yoloNumAnchors in setOf(25200, 6300, 10647, 15120) && modelLabels.isEmpty() && totalChannels == 6)
+                    )
+                    val headerCols = if (yoloHasObjectness) 5 else 4
+                    yoloNumClasses = (totalChannels - headerCols - yoloExtraChannels).coerceAtLeast(1)
                 }
-                Log.d("Detector", "YOLO configurado ($architecture): anchors=$yoloNumAnchors, classes=$yoloNumClasses, transposto=$yoloTransposed")
+                Log.d("Detector", "YOLO configurado ($architecture): anchors=$yoloNumAnchors, classes=$yoloNumClasses, transposto=$yoloTransposed, obj=$yoloHasObjectness, extra=$yoloExtraChannels")
             }
 
             loadedPath = file.absolutePath
@@ -243,6 +343,46 @@ class ObjectDetectorHelper(
             Log.e("Detector", ultimoErro!!, e)
             detectorListener?.onError(ultimoErro!!)
         }
+    }
+
+    private fun configureTwoOutputSsdIndices() {
+        val interp = interpreter ?: return
+        if (interp.outputTensorCount < 2) return
+        val t0 = interp.getOutputTensor(0)
+        val t1 = interp.getOutputTensor(1)
+        val s0 = t0.shape()
+        val s1 = t1.shape()
+        when {
+            s1.size == 3 && s1[2] == 4 && s0.size == 3 && s0[2] != 4 -> {
+                rawScoreTensorIdx = 0
+                rawBoxTensorIdx = 1
+            }
+            s0.size == 3 && s0[2] == 4 && s1.size == 3 && s1[2] != 4 -> {
+                rawBoxTensorIdx = 0
+                rawScoreTensorIdx = 1
+            }
+            else -> {
+                val n0 = t0.name().lowercase()
+                val n1 = t1.name().lowercase()
+                if (n0.contains("box") || n0.contains("loc") || n1.contains("score")) {
+                    rawBoxTensorIdx = 0
+                    rawScoreTensorIdx = 1
+                } else {
+                    rawScoreTensorIdx = 0
+                    rawBoxTensorIdx = 1
+                }
+            }
+        }
+        val scoreT = interp.getOutputTensor(rawScoreTensorIdx)
+        val boxT = interp.getOutputTensor(rawBoxTensorIdx)
+        rawAnchorCount = scoreT.shape().getOrNull(1)?.coerceAtLeast(1) ?: 19206
+        rawClassCount = scoreT.shape().getOrNull(2)?.coerceAtLeast(1) ?: 1
+        rawScoreOutputType = scoreT.dataType()
+        rawScoreQuantScale = scoreT.quantizationParams().scale.let { if (it > 0f) it else 1f }
+        rawScoreQuantZeroPoint = scoreT.quantizationParams().zeroPoint
+        rawBoxOutputType = boxT.dataType()
+        rawBoxQuantScale = boxT.quantizationParams().scale.let { if (it > 0f) it else 1f }
+        rawBoxQuantZeroPoint = boxT.quantizationParams().zeroPoint
     }
 
     private fun identifySsdOutputs() {
@@ -407,7 +547,12 @@ class ObjectDetectorHelper(
                     Log.w("Detector", "Falha TaskVision em frame, alternando para Interpreter: ${t.message}")
                     try { taskObjectDetector?.close() } catch (_: Exception) {}
                     taskObjectDetector = null
-                    architecture = ModelArchitecture.SSD_POST_PROCESS
+                    architecture = if (interp.outputTensorCount >= 4) {
+                        ModelArchitecture.SSD_POST_PROCESS
+                    } else {
+                        configureTwoOutputSsdIndices()
+                        ModelArchitecture.SSD_RAW_ANCHORS
+                    }
                 }
             }
 
@@ -438,11 +583,22 @@ class ObjectDetectorHelper(
                     bArr = ByteArray(neededChannels)
                     inputByteArray = bArr
                 }
-                var outIdx = 0
-                for (px in pixels) {
-                    bArr[outIdx++] = lut[(px shr 16) and 0xFF]
-                    bArr[outIdx++] = lut[(px shr 8)  and 0xFF]
-                    bArr[outIdx++] = lut[px          and 0xFF]
+                if (isInputChannelFirst) {
+                    val planeG = totalPixels
+                    val planeB = totalPixels * 2
+                    for (idx in pixels.indices) {
+                        val px = pixels[idx]
+                        bArr[idx]          = lut[(px shr 16) and 0xFF]
+                        bArr[planeG + idx] = lut[(px shr 8)  and 0xFF]
+                        bArr[planeB + idx] = lut[px          and 0xFF]
+                    }
+                } else {
+                    var outIdx = 0
+                    for (px in pixels) {
+                        bArr[outIdx++] = lut[(px shr 16) and 0xFF]
+                        bArr[outIdx++] = lut[(px shr 8)  and 0xFF]
+                        bArr[outIdx++] = lut[px          and 0xFF]
+                    }
                 }
                 buf.put(bArr)
                 buf.rewind()
@@ -452,11 +608,22 @@ class ObjectDetectorHelper(
                     fArr = FloatArray(neededChannels)
                     inputFloatArray = fArr
                 }
-                var outIdx = 0
-                for (px in pixels) {
-                    fArr[outIdx++] = FLOAT_NORM_LUT[(px shr 16) and 0xFF]
-                    fArr[outIdx++] = FLOAT_NORM_LUT[(px shr 8)  and 0xFF]
-                    fArr[outIdx++] = FLOAT_NORM_LUT[px          and 0xFF]
+                if (isInputChannelFirst) {
+                    val planeG = totalPixels
+                    val planeB = totalPixels * 2
+                    for (idx in pixels.indices) {
+                        val px = pixels[idx]
+                        fArr[idx]          = FLOAT_NORM_LUT[(px shr 16) and 0xFF]
+                        fArr[planeG + idx] = FLOAT_NORM_LUT[(px shr 8)  and 0xFF]
+                        fArr[planeB + idx] = FLOAT_NORM_LUT[px          and 0xFF]
+                    }
+                } else {
+                    var outIdx = 0
+                    for (px in pixels) {
+                        fArr[outIdx++] = FLOAT_NORM_LUT[(px shr 16) and 0xFF]
+                        fArr[outIdx++] = FLOAT_NORM_LUT[(px shr 8)  and 0xFF]
+                        fArr[outIdx++] = FLOAT_NORM_LUT[px          and 0xFF]
+                    }
                 }
                 val fView = inputFloatView ?: buf.asFloatBuffer().also { inputFloatView = it }
                 fView.rewind()
@@ -533,6 +700,62 @@ class ObjectDetectorHelper(
                     if (finalDetections.size >= maxResults) break
                 }
 
+            } else if (architecture == ModelArchitecture.SSD_RAW_ANCHORS) {
+                val (scoresFloat, boxesFloat) = runTwoOutputTensorMatrix(
+                    interp = interp,
+                    inputBuf = buf,
+                    scoreIdx = rawScoreTensorIdx,
+                    boxIdx = rawBoxTensorIdx,
+                    numAnchors = rawAnchorCount,
+                    numClasses = rawClassCount
+                )
+                var anchors = cachedEfficientDetAnchors
+                if (anchors == null || cachedAnchorsW != inputWidth || cachedAnchorsH != inputHeight || anchors.size != rawAnchorCount) {
+                    anchors = generateEfficientDetAnchors(inputWidth, inputHeight)
+                    cachedEfficientDetAnchors = anchors
+                    cachedAnchorsW = inputWidth
+                    cachedAnchorsH = inputHeight
+                }
+
+                val allowedIndices = if (customLabels.isNotEmpty() && modelLabels.isNotEmpty()) {
+                    (0 until rawClassCount).filter { idx ->
+                        val resolved = resolverRotuloClasse(idx)
+                        customLabels.any { c -> labelEquivalente(c, resolved) }
+                    }.toSet()
+                } else {
+                    emptySet()
+                }
+
+                val decoded = decodeEfficientDetTwoOutputs(
+                    scores = scoresFloat,
+                    boxes = boxesFloat,
+                    anchors = anchors,
+                    numClasses = rawClassCount,
+                    scoreThreshold = scoreThreshold,
+                    allowedClassIndices = allowedIndices
+                )
+                val nmsResult = nmsMultiClasse(decoded).take(maxResults)
+                for (box in nmsResult) {
+                    val x1Tensor = (box[0] - box[2] / 2f) * inputWidth
+                    val y1Tensor = (box[1] - box[3] / 2f) * inputHeight
+                    val x2Tensor = (box[0] + box[2] / 2f) * inputWidth
+                    val y2Tensor = (box[1] + box[3] / 2f) * inputHeight
+
+                    val left   = ((x1Tensor - padX) / scale).coerceIn(0f, imgW)
+                    val top    = ((y1Tensor - padY) / scale).coerceIn(0f, imgH)
+                    val right  = ((x2Tensor - padX) / scale).coerceIn(0f, imgW)
+                    val bottom = ((y2Tensor - padY) / scale).coerceIn(0f, imgH)
+                    if (right <= left || bottom <= top) continue
+
+                    val label = resolverRotuloClasse(box[5].toInt())
+                    finalDetections.add(
+                        Detection.create(
+                            RectF(left, top, right, bottom),
+                            listOf(Category.create(label, label, box[4]))
+                        )
+                    )
+                }
+
             } else if (architecture == ModelArchitecture.YOLO_END2END_NMS) {
                 val matrix = runYoloOutputMatrix(interp, buf, yoloNumAnchors, 6)
                 val decoded = decodeYoloEnd2EndNms(
@@ -555,9 +778,11 @@ class ObjectDetectorHelper(
                     )
                 )
             } else {
-                // Inferência YOLO raw (FLOAT32, UINT8 ou INT8)
-                val dim1 = if (yoloTransposed) 4 + yoloNumClasses else yoloNumAnchors
-                val dim2 = if (yoloTransposed) yoloNumAnchors else 4 + yoloNumClasses
+                // Inferência YOLO raw (FLOAT32, UINT8 ou INT8, incluindo YOLOv5, YOLO-Seg e YOLO-OBB)
+                val headerCols = if (yoloHasObjectness) 5 else 4
+                val totalChannels = headerCols + yoloNumClasses + yoloExtraChannels
+                val dim1 = if (yoloTransposed) totalChannels else yoloNumAnchors
+                val dim2 = if (yoloTransposed) yoloNumAnchors else totalChannels
                 val matrix = runYoloOutputMatrix(interp, buf, dim1, dim2)
 
                 val candidates = decodeYoloRawCandidates(
@@ -567,7 +792,8 @@ class ObjectDetectorHelper(
                     transposed = yoloTransposed,
                     inputWidth = inputWidth,
                     inputHeight = inputHeight,
-                    scoreThreshold = scoreThreshold
+                    scoreThreshold = scoreThreshold,
+                    hasObjectness = yoloHasObjectness
                 )
 
                 val nmsResult = nmsMultiClasse(candidates).take(maxResults)
@@ -593,12 +819,135 @@ class ObjectDetectorHelper(
         }
     }
 
+    private fun runTwoOutputTensorMatrix(
+        interp: Interpreter,
+        inputBuf: ByteBuffer,
+        scoreIdx: Int,
+        boxIdx: Int,
+        numAnchors: Int,
+        numClasses: Int
+    ): Pair<Array<FloatArray>, Array<FloatArray>> {
+        val scoresQuant = rawScoreOutputType == DataType.UINT8 || rawScoreOutputType == DataType.INT8
+        val boxesQuant = rawBoxOutputType == DataType.UINT8 || rawBoxOutputType == DataType.INT8
+
+        val scoreTarget: Any
+        val scoresResult: Array<FloatArray>
+        if (scoresQuant) {
+            var bOut = reusableRawScoresByte
+            var dOut = reusableRawScoresDeq
+            if (bOut == null || dOut == null || bOut[0].size != numAnchors || bOut[0].firstOrNull()?.size != numClasses) {
+                bOut = Array(1) { Array(numAnchors) { ByteArray(numClasses) } }
+                dOut = Array(numAnchors) { FloatArray(numClasses) }
+                reusableRawScoresByte = bOut
+                reusableRawScoresDeq = dOut
+                reusableRawScoresFloat = null
+            }
+            scoreTarget = bOut
+            scoresResult = dOut
+        } else {
+            var fOut = reusableRawScoresFloat
+            if (fOut == null || fOut[0].size != numAnchors || fOut[0].firstOrNull()?.size != numClasses) {
+                fOut = Array(1) { Array(numAnchors) { FloatArray(numClasses) } }
+                reusableRawScoresFloat = fOut
+                reusableRawScoresByte = null
+                reusableRawScoresDeq = null
+            }
+            scoreTarget = fOut
+            scoresResult = fOut[0]
+        }
+
+        val boxTarget: Any
+        val boxesResult: Array<FloatArray>
+        if (boxesQuant) {
+            var bOut = reusableRawBoxesByte
+            var dOut = reusableRawBoxesDeq
+            if (bOut == null || dOut == null || bOut[0].size != numAnchors || bOut[0].firstOrNull()?.size != 4) {
+                bOut = Array(1) { Array(numAnchors) { ByteArray(4) } }
+                dOut = Array(numAnchors) { FloatArray(4) }
+                reusableRawBoxesByte = bOut
+                reusableRawBoxesDeq = dOut
+                reusableRawBoxesFloat = null
+            }
+            boxTarget = bOut
+            boxesResult = dOut
+        } else {
+            var fOut = reusableRawBoxesFloat
+            if (fOut == null || fOut[0].size != numAnchors || fOut[0].firstOrNull()?.size != 4) {
+                fOut = Array(1) { Array(numAnchors) { FloatArray(4) } }
+                reusableRawBoxesFloat = fOut
+                reusableRawBoxesByte = null
+                reusableRawBoxesDeq = null
+            }
+            boxTarget = fOut
+            boxesResult = fOut[0]
+        }
+
+        val outMap = HashMap<Int, Any>(2)
+        outMap[scoreIdx] = scoreTarget
+        outMap[boxIdx] = boxTarget
+        interp.runForMultipleInputsOutputs(arrayOf(inputBuf), outMap)
+
+        if (scoresQuant) {
+            val isUint8 = rawScoreOutputType == DataType.UINT8
+            val zp = rawScoreQuantZeroPoint
+            val scale = rawScoreQuantScale
+            val src = reusableRawScoresByte!![0]
+            for (r in 0 until numAnchors) {
+                val sr = src[r]
+                val dr = scoresResult[r]
+                for (c in 0 until numClasses) {
+                    val q = if (isUint8) (sr[c].toInt() and 0xFF) else sr[c].toInt()
+                    dr[c] = (q - zp) * scale
+                }
+            }
+        }
+        if (boxesQuant) {
+            val isUint8 = rawBoxOutputType == DataType.UINT8
+            val zp = rawBoxQuantZeroPoint
+            val scale = rawBoxQuantScale
+            val src = reusableRawBoxesByte!![0]
+            for (r in 0 until numAnchors) {
+                val sr = src[r]
+                val dr = boxesResult[r]
+                for (c in 0 until 4) {
+                    val q = if (isUint8) (sr[c].toInt() and 0xFF) else sr[c].toInt()
+                    dr[c] = (q - zp) * scale
+                }
+            }
+        }
+        return scoresResult to boxesResult
+    }
+
     private fun runYoloOutputMatrix(
         interp: Interpreter,
         inputBuf: ByteBuffer,
         dim1: Int,
         dim2: Int
     ): Array<FloatArray> {
+        fun execTarget(target: Any) {
+            val count = interp.outputTensorCount
+            if (count <= 1) {
+                interp.run(inputBuf, target)
+            } else {
+                val outMap = HashMap<Int, Any>(count)
+                outMap[0] = target
+                val nb1 = interp.getOutputTensor(1).numBytes().coerceAtLeast(4)
+                var extraBuf = reusableExtraOutputBuf
+                if (extraBuf == null || extraBuf.capacity() != nb1) {
+                    extraBuf = ByteBuffer.allocateDirect(nb1).order(ByteOrder.nativeOrder())
+                    reusableExtraOutputBuf = extraBuf
+                } else {
+                    extraBuf.rewind()
+                }
+                outMap[1] = extraBuf
+                for (i in 2 until count) {
+                    val nb = interp.getOutputTensor(i).numBytes().coerceAtLeast(4)
+                    outMap[i] = ByteBuffer.allocateDirect(nb).order(ByteOrder.nativeOrder())
+                }
+                interp.runForMultipleInputsOutputs(arrayOf(inputBuf), outMap)
+            }
+        }
+
         val isQuant = outputDataType == DataType.UINT8 || outputDataType == DataType.INT8
         if (isQuant) {
             var byteOut = reusableByteOut
@@ -613,7 +962,7 @@ class ObjectDetectorHelper(
                 cachedOutDim1 = dim1
                 cachedOutDim2 = dim2
             }
-            interp.run(inputBuf, byteOut)
+            execTarget(byteOut)
             val isUint8 = outputDataType == DataType.UINT8
             val zp = outQuantZeroPoint
             val scale = outQuantScale
@@ -638,7 +987,7 @@ class ObjectDetectorHelper(
             cachedOutDim1 = dim1
             cachedOutDim2 = dim2
         }
-        interp.run(inputBuf, floatOut)
+        execTarget(floatOut)
         return floatOut[0]
     }
 
@@ -768,6 +1117,16 @@ class ObjectDetectorHelper(
         reusableFloatOut = null
         reusableByteOut = null
         reusableDeqOut = null
+        reusableExtraOutputBuf = null
+        cachedAnchorsW = 0
+        cachedAnchorsH = 0
+        cachedEfficientDetAnchors = null
+        reusableRawScoresFloat = null
+        reusableRawBoxesFloat = null
+        reusableRawScoresByte = null
+        reusableRawBoxesByte = null
+        reusableRawScoresDeq = null
+        reusableRawBoxesDeq = null
     }
 
     data class ResultadoDeteccao(
@@ -882,31 +1241,49 @@ class ObjectDetectorHelper(
             }
 
             val labelsExtraidas = extractLabelsFromFile(file)
+            val taskExtraida = extrairTaskDeArquivo(file)
+            if (taskExtraida == "pose") {
+                return ModelInspectionReport(
+                    compativel = false,
+                    arquiteturaResumo = "Modelo de pontos-chave (Pose)",
+                    detalhesTecnicos = "Task pose",
+                    avisoUsuario = "Este modelo detecta pontos-chave (pose) e não caixas de objetos. Exporte um modelo de detecção ou segmentação.",
+                    numClasses = 0,
+                    labelsExtraidas = labelsExtraidas
+                )
+            }
             var interp: Interpreter? = null
             return try {
                 interp = Interpreter(file, Interpreter.Options().apply { setNumThreads(2) })
                 val inTensor = interp.getInputTensor(0)
                 val inShape = inTensor.shape()
                 val inType = inTensor.dataType()
-                if (inShape.size != 4 || inShape[3] != 3 || (inType != DataType.FLOAT32 && inType != DataType.UINT8 && inType != DataType.INT8)) {
+                val ehNhwc = inShape.size == 4 && inShape[3] == 3
+                val ehNchw = inShape.size == 4 && inShape[1] == 3 && inShape[3] > 3
+                if ((!ehNhwc && !ehNchw) || (inType != DataType.FLOAT32 && inType != DataType.UINT8 && inType != DataType.INT8)) {
                     return ModelInspectionReport(
                         compativel = false,
                         arquiteturaResumo = "Entrada incompatível",
                         detalhesTecnicos = "Input ${inShape.toList()} $inType",
-                        avisoUsuario = "Modelo incompatível com câmera RGB: entrada esperada [1, H, W, 3] FLOAT32/UINT8/INT8, mas o modelo espera ${inShape.toList()} ($inType).",
+                        avisoUsuario = "Modelo incompatível com câmera RGB: entrada esperada [1, H, W, 3] ou [1, 3, H, W] FLOAT32/UINT8/INT8, mas o modelo espera ${inShape.toList()} ($inType).",
                         numClasses = 0,
                         labelsExtraidas = labelsExtraidas
                     )
                 }
 
                 val numOutputs = interp.outputTensorCount
-                val inResumo = "${inShape[1]}x${inShape[2]} $inType"
-                if (numOutputs >= 4) {
+                val inResumo = if (ehNchw) "${inShape[2]}x${inShape[3]} NCHW $inType" else "${inShape[1]}x${inShape[2]} $inType"
+                val isTwoOutSsd = numOutputs == 2 && isTwoOutputBoxAndScoresDetector(
+                    interp.getOutputTensor(0).shape(),
+                    interp.getOutputTensor(1).shape()
+                )
+                if (numOutputs >= 4 || isTwoOutSsd) {
                     val labelsValidas = labelsExtraidas.filter { it != "???" && it.isNotBlank() }
+                    val prefixoArch = if (isTwoOutSsd) "SSD / EfficientDet" else "SSD"
                     return ModelInspectionReport(
                         compativel = true,
                         arquiteturaResumo = "Modelo pronto para uso",
-                        detalhesTecnicos = "SSD ($inResumo) • ${labelsValidas.size} classes nos metadados",
+                        detalhesTecnicos = "$prefixoArch ($inResumo) • ${labelsValidas.size} classes nos metadados",
                         avisoUsuario = if (labelsValidas.isEmpty()) {
                             "Compatível com a câmera, mas não trouxe nomes prontos. Escreva abaixo o que deseja contar."
                         } else {
@@ -930,27 +1307,64 @@ class ObjectDetectorHelper(
                     )
                 }
 
-                val isEnd2End = outShape.size == 3 && outShape[2] == 6 && outShape[1] in 1..1000
-                val isYoloRawTransposed = outShape.size == 3 && outShape[1] in 5..300 && outShape[2] > outShape[1]
-                val isYoloRawNormal = outShape.size == 3 && outShape[2] in 5..300 && outShape[1] > outShape[2]
+                var segMaskChannels = 0
+                if (numOutputs == 2) {
+                    val outShape1 = interp.getOutputTensor(1).shape()
+                    if (outShape1.size == 4) {
+                        segMaskChannels = when {
+                            outShape1[3] in 1..128 && outShape1[1] > 8 -> outShape1[3]
+                            outShape1[1] in 1..128 && outShape1[3] > 8 -> outShape1[1]
+                            else -> 32
+                        }
+                    }
+                }
+
+                val isEnd2End = numOutputs == 1 && outShape.size == 3 && outShape[2] == 6 && outShape[1] in 1..1000
+                val isYoloRawTransposed = outShape.size == 3 && outShape[1] in 5..400 && outShape[2] > outShape[1]
+                val isYoloRawNormal = outShape.size == 3 && outShape[2] in 5..400 && outShape[1] > outShape[2]
 
                 if (!isEnd2End && !isYoloRawTransposed && !isYoloRawNormal) {
                     return ModelInspectionReport(
                         compativel = false,
                         arquiteturaResumo = "Formato não compatível",
                         detalhesTecnicos = "Saída ${outShape.toList()} ($outType)",
-                        avisoUsuario = "Este modelo usa um formato que não marca caixas na câmera (ex.: segmentação ou outro tipo de rede).",
+                        avisoUsuario = "Este modelo usa um formato que não marca caixas na câmera (ex.: saída incompatível).",
                         numClasses = 0,
                         labelsExtraidas = labelsExtraidas
                     )
                 }
 
+                val totalChannels = when {
+                    isYoloRawTransposed -> outShape[1]
+                    isYoloRawNormal -> outShape[2]
+                    else -> 0
+                }
+                val numAnchors = when {
+                    isYoloRawTransposed -> outShape[2]
+                    isYoloRawNormal -> outShape[1]
+                    else -> outShape[1]
+                }
+                val extraChannels = when {
+                    segMaskChannels > 0 && totalChannels > 4 + segMaskChannels -> segMaskChannels
+                    taskExtraida == "obb" && totalChannels > 5 -> 1
+                    else -> 0
+                }
+                val hasObj = !isEnd2End && extraChannels == 0 && taskExtraida != "obb" && (
+                    (labelsExtraidas.isNotEmpty() && totalChannels == 5 + labelsExtraidas.size) ||
+                    (numAnchors in setOf(25200, 6300, 10647, 15120) && labelsExtraidas.isEmpty() && totalChannels == 6)
+                )
+
                 val numClasses = when {
                     isEnd2End -> labelsExtraidas.size.coerceAtLeast(1)
-                    isYoloRawTransposed -> (outShape[1] - 4).coerceAtLeast(1)
-                    else -> (outShape[2] - 4).coerceAtLeast(1)
+                    else -> (totalChannels - (if (hasObj) 5 else 4) - extraChannels).coerceAtLeast(1)
                 }
-                val archNome = if (isEnd2End) "YOLO End2End NMS" else "YOLO Raw"
+                val archNome = when {
+                    isEnd2End -> "YOLO End2End NMS"
+                    segMaskChannels > 0 -> "YOLO Segmentação (Caixas)"
+                    taskExtraida == "obb" -> "YOLO OBB"
+                    hasObj -> "YOLOv5 (Objectness)"
+                    else -> "YOLO Raw"
+                }
                 val avisoLabels = when {
                     labelsExtraidas.isEmpty() && numClasses > 1 ->
                         "Modelo compatível com $numClasses categorias, mas sem os nomes salvos no arquivo — informe os $numClasses nomes abaixo para separar na planilha."
@@ -1036,61 +1450,105 @@ class ObjectDetectorHelper(
             transposed: Boolean,
             inputWidth: Int,
             inputHeight: Int,
-            scoreThreshold: Float
+            scoreThreshold: Float,
+            hasObjectness: Boolean = false,
+            minBoxNorm: Float = 0.004f
         ): List<FloatArray> {
             if (numAnchors <= 0 || numClasses <= 0) return emptyList()
             val lastIdx = numAnchors - 1
             val midIdx = numAnchors / 2
+            val classOffset = if (hasObjectness) 5 else 4
 
             fun readVal(coordOrClass: Int, anchor: Int): Float =
                 if (transposed) out[coordOrClass][anchor] else out[anchor][coordOrClass]
 
-            val maxSampleCoord = maxOf(
-                readVal(0, 0), readVal(0, midIdx), readVal(0, lastIdx), readVal(2, lastIdx)
-            )
-            val coordsArePixels = maxSampleCoord > 2.0f
-            val scaleX = if (coordsArePixels) 1f / inputWidth.coerceAtLeast(1).toFloat() else 1f
-            val scaleY = if (coordsArePixels) 1f / inputHeight.coerceAtLeast(1).toFloat() else 1f
+            val sampleIndices = LinkedHashSet<Int>(68).apply {
+                add(0)
+                add(midIdx)
+                add(lastIdx)
+                val step = max(1, numAnchors / 64)
+                var idx = 0
+                while (idx < numAnchors) {
+                    add(idx)
+                    idx += step
+                }
+            }
 
+            var maxSampleCoord = 0f
             var minSampleScore = Float.MAX_VALUE
             var maxSampleScore = -Float.MAX_VALUE
-            for (c in 0 until numClasses) {
-                for (idx in intArrayOf(0, midIdx, lastIdx)) {
-                    val v = readVal(4 + c, idx)
+            for (idx in sampleIndices) {
+                for (coord in 0..3) {
+                    val cv = readVal(coord, idx)
+                    if (cv > maxSampleCoord) maxSampleCoord = cv
+                }
+                if (hasObjectness) {
+                    val ov = readVal(4, idx)
+                    if (ov < minSampleScore) minSampleScore = ov
+                    if (ov > maxSampleScore) maxSampleScore = ov
+                }
+                for (c in 0 until numClasses) {
+                    val v = readVal(classOffset + c, idx)
                     if (v < minSampleScore) minSampleScore = v
                     if (v > maxSampleScore) maxSampleScore = v
                 }
             }
+            val coordsArePixels = maxSampleCoord > 2.0f
+            val scaleX = if (coordsArePixels) 1f / inputWidth.coerceAtLeast(1).toFloat() else 1f
+            val scaleY = if (coordsArePixels) 1f / inputHeight.coerceAtLeast(1).toFloat() else 1f
             val needsSigmoid = minSampleScore < -0.001f || maxSampleScore > 1.001f
 
             val candidates = mutableListOf<FloatArray>()
             for (i in 0 until numAnchors) {
+                val prob: Float
+                var bestClass = 0
+                val probClass0: Float
+
+                if (hasObjectness) {
+                    val rawObj = readVal(4, i)
+                    val objProb = if (needsSigmoid) sigmoidFn(rawObj) else rawObj.coerceIn(0f, 1f)
+                    if (objProb < scoreThreshold) continue
+
+                    var bestClsRaw = -Float.MAX_VALUE
+                    for (c in 0 until numClasses) {
+                        val s = readVal(5 + c, i)
+                        if (s > bestClsRaw) {
+                            bestClsRaw = s
+                            bestClass = c
+                        }
+                    }
+                    val clsProb = if (needsSigmoid) sigmoidFn(bestClsRaw) else bestClsRaw.coerceIn(0f, 1f)
+                    prob = (objProb * clsProb).coerceIn(0f, 1f)
+                    if (prob < scoreThreshold) continue
+                    val rawC0 = readVal(5, i)
+                    val c0Prob = if (needsSigmoid) sigmoidFn(rawC0) else rawC0.coerceIn(0f, 1f)
+                    probClass0 = (objProb * c0Prob).coerceIn(0f, 1f)
+                } else {
+                    var rawScore = -Float.MAX_VALUE
+                    val rawClass0 = readVal(4, i)
+                    for (c in 0 until numClasses) {
+                        val s = readVal(4 + c, i)
+                        if (s > rawScore) {
+                            rawScore = s
+                            bestClass = c
+                        }
+                    }
+                    prob = if (needsSigmoid) sigmoidFn(rawScore) else rawScore.coerceIn(0f, 1f)
+                    if (prob < scoreThreshold) continue
+                    probClass0 = if (needsSigmoid) sigmoidFn(rawClass0) else rawClass0.coerceIn(0f, 1f)
+                }
+
                 val normCx = readVal(0, i) * scaleX
                 val normCy = readVal(1, i) * scaleY
                 val normW = readVal(2, i) * scaleX
                 val normH = readVal(3, i) * scaleY
 
-                var rawScore = -Float.MAX_VALUE
-                var bestClass = 0
-                val rawClass0 = readVal(4, i)
-                for (c in 0 until numClasses) {
-                    val s = readVal(4 + c, i)
-                    if (s > rawScore) {
-                        rawScore = s
-                        bestClass = c
-                    }
-                }
-
-                val prob = if (needsSigmoid) sigmoidFn(rawScore) else rawScore.coerceIn(0f, 1f)
-                val probClass0 = if (needsSigmoid) sigmoidFn(rawClass0) else rawClass0.coerceIn(0f, 1f)
-
-                if (prob >= scoreThreshold &&
-                    normW > 0.015f && normH > 0.015f &&
+                if (normW > minBoxNorm && normH > minBoxNorm &&
                     normW < 0.98f && normH < 0.98f &&
-                    normCx > 0.005f && normCy > 0.005f &&
-                    normCx < 0.995f && normCy < 0.995f
+                    normCx > 0.002f && normCy > 0.002f &&
+                    normCx < 0.998f && normCy < 0.998f
                 ) {
-                    if (numClasses == 4) {
+                    if (numClasses == 4 && !hasObjectness) {
                         val p0 = if (needsSigmoid) sigmoidFn(readVal(4, i)) else readVal(4, i).coerceIn(0f, 1f)
                         val p1 = if (needsSigmoid) sigmoidFn(readVal(5, i)) else readVal(5, i).coerceIn(0f, 1f)
                         val p2 = if (needsSigmoid) sigmoidFn(readVal(6, i)) else readVal(6, i).coerceIn(0f, 1f)
@@ -1114,11 +1572,16 @@ class ObjectDetectorHelper(
             if (numRows <= 0) return emptyList()
             val mid = numRows / 2
             val last = numRows - 1
-            val maxSampleCoord = maxOf(
+            var maxSampleCoord = maxOf(
                 out[0][2], out[0][3],
                 out[mid][2], out[mid][3],
                 out[last][2], out[last][3]
             )
+            for (i in 0 until numRows) {
+                if (out[i][4] > 0.005f) {
+                    maxSampleCoord = maxOf(maxSampleCoord, out[i][2], out[i][3])
+                }
+            }
             val coordsArePixels = maxSampleCoord > 2.0f
             val scaleX = if (coordsArePixels) 1f / inputWidth.coerceAtLeast(1).toFloat() else 1f
             val scaleY = if (coordsArePixels) 1f / inputHeight.coerceAtLeast(1).toFloat() else 1f
@@ -1134,10 +1597,151 @@ class ObjectDetectorHelper(
 
                 val w = x2 - x1
                 val h = y2 - y1
-                if (score >= scoreThreshold && w > 0.01f && h > 0.01f && w < 0.99f && h < 0.99f) {
+                if (score >= scoreThreshold && w > 0.004f && h > 0.004f && w < 0.99f && h < 0.99f) {
                     val cx = (x1 + x2) / 2f
                     val cy = (y1 + y2) / 2f
                     candidates.add(floatArrayOf(cx, cy, w, h, score.coerceIn(0f, 1f), cls.toFloat(), score))
+                }
+            }
+            return candidates
+        }
+
+        private fun normalizarChaveLabel(s: String): String {
+            val nfd = java.text.Normalizer.normalize(
+                s.trim().lowercase(java.util.Locale.ROOT),
+                java.text.Normalizer.Form.NFD
+            )
+            return nfd.replace(Regex("\\p{M}+"), "")
+        }
+
+        internal fun labelEquivalente(a: String, b: String): Boolean {
+            val na = normalizarChaveLabel(a)
+            val nb = normalizarChaveLabel(b)
+            if (na.isEmpty() || nb.isEmpty()) return false
+            if (na == nb) return true
+            val aliases = mapOf(
+                "maca" to "apple",
+                "apple" to "maca",
+                "laranja" to "orange",
+                "orange" to "laranja"
+            )
+            return aliases[na] == nb
+        }
+
+        internal fun isTwoOutputBoxAndScoresDetector(shape0: IntArray, shape1: IntArray): Boolean {
+            if (shape0.size != 3 || shape1.size != 3) return false
+            if (shape0[0] != 1 || shape1[0] != 1) return false
+            if (shape0[1] != shape1[1] || shape0[1] < 100) return false
+            return (shape0[2] == 4 && shape1[2] >= 1) || (shape1[2] == 4 && shape0[2] >= 1)
+        }
+
+        internal fun generateEfficientDetAnchors(inputWidth: Int, inputHeight: Int): Array<FloatArray> {
+            val wIn = inputWidth.coerceAtLeast(32).toFloat()
+            val hIn = inputHeight.coerceAtLeast(32).toFloat()
+            val sq2 = sqrt(2.0).toFloat()
+            val invSq2 = (1.0 / sqrt(2.0)).toFloat()
+            val aspects = arrayOf(
+                1.0f to 1.0f,
+                sq2 to invSq2,
+                invSq2 to sq2
+            )
+            val list = ArrayList<FloatArray>(20000)
+            for (level in 3..7) {
+                val stride = 1 shl level
+                val gridH = (inputHeight + stride - 1) / stride
+                val gridW = (inputWidth + stride - 1) / stride
+                val baseSize = 3.0f * stride
+                for (y in 0 until gridH) {
+                    val yc = (y + 0.5f) * stride / hIn
+                    for (x in 0 until gridW) {
+                        val xc = (x + 0.5f) * stride / wIn
+                        for (o in 0..2) {
+                            val octScale = 2.0.pow(o / 3.0).toFloat()
+                            val s = baseSize * octScale
+                            for ((arW, arH) in aspects) {
+                                val ah = (s * arH) / hIn
+                                val aw = (s * arW) / wIn
+                                list.add(floatArrayOf(ah, aw, yc, xc))
+                            }
+                        }
+                    }
+                }
+            }
+            return list.toTypedArray()
+        }
+
+        internal fun decodeEfficientDetTwoOutputs(
+            scores: Array<FloatArray>,
+            boxes: Array<FloatArray>,
+            anchors: Array<FloatArray>,
+            numClasses: Int,
+            scoreThreshold: Float,
+            allowedClassIndices: Set<Int> = emptySet()
+        ): List<FloatArray> {
+            val n = min(scores.size, min(boxes.size, anchors.size))
+            if (n <= 0 || numClasses <= 0) return emptyList()
+
+            val indicesToCheck = if (allowedClassIndices.isNotEmpty()) {
+                allowedClassIndices.filter { it in 0 until numClasses }.toIntArray()
+            } else {
+                IntArray(numClasses) { it }
+            }
+            if (indicesToCheck.isEmpty()) return emptyList()
+
+            var minSampleScore = Float.MAX_VALUE
+            var maxSampleScore = -Float.MAX_VALUE
+            val step = max(1, n / 64)
+            var sIdx = 0
+            while (sIdx < n) {
+                val row = scores[sIdx]
+                val cols = min(numClasses, row.size)
+                for (c in 0 until cols) {
+                    val v = row[c]
+                    if (v < minSampleScore) minSampleScore = v
+                    if (v > maxSampleScore) maxSampleScore = v
+                }
+                sIdx += step
+            }
+            val needsSigmoid = minSampleScore < -0.001f || maxSampleScore > 1.001f
+            val rawMin = if (needsSigmoid) {
+                -ln((1.0 / scoreThreshold.coerceIn(0.01f, 0.99f)) - 1.0).toFloat()
+            } else {
+                0f
+            }
+
+            val candidates = mutableListOf<FloatArray>()
+            for (i in 0 until n) {
+                val sRow = scores[i]
+                var bestClass = indicesToCheck[0]
+                var bestRaw = -Float.MAX_VALUE
+                for (c in indicesToCheck) {
+                    if (c < sRow.size) {
+                        val v = sRow[c]
+                        if (v > bestRaw) {
+                            bestRaw = v
+                            bestClass = c
+                        }
+                    }
+                }
+                if (needsSigmoid && bestRaw < rawMin) continue
+                val prob = if (needsSigmoid) sigmoidFn(bestRaw) else bestRaw.coerceIn(0f, 1f)
+                if (prob < scoreThreshold) continue
+
+                val a = anchors[i]
+                val b = boxes[i]
+                val yc = (b[0] / 10f) * a[0] + a[2]
+                val xc = (b[1] / 10f) * a[1] + a[3]
+                val h = exp((b[2] / 5f).coerceIn(-10f, 10f).toDouble()).toFloat() * a[0]
+                val w = exp((b[3] / 5f).coerceIn(-10f, 10f).toDouble()).toFloat() * a[1]
+
+                val x1 = (xc - w / 2f).coerceIn(0f, 1f)
+                val y1 = (yc - h / 2f).coerceIn(0f, 1f)
+                val x2 = (xc + w / 2f).coerceIn(0f, 1f)
+                val y2 = (yc + h / 2f).coerceIn(0f, 1f)
+                val cw = x2 - x1
+                val ch = y2 - y1
+                if (cw > 0.004f && ch > 0.004f) {
+                    candidates.add(floatArrayOf((x1 + x2) / 2f, (y1 + y2) / 2f, cw, ch, prob, bestClass.toFloat(), prob))
                 }
             }
             return candidates
@@ -1173,6 +1777,86 @@ class ObjectDetectorHelper(
         }
 
         private fun sigmoidFn(x: Float) = (1f / (1f + exp(-x.toDouble()))).toFloat()
+
+        internal fun extrairTaskMetadadosUltralytics(textoAscii: String): String? {
+            val match = Regex("""(?im)\btask\s*:\s*['"]?(detect|segment|obb|classify|pose)['"]?""").find(textoAscii)
+            return match?.groupValues?.get(1)?.lowercase(java.util.Locale.ROOT)
+        }
+
+        internal fun extrairTaskDeArquivo(file: File): String? {
+            return try {
+                val tamanho = file.length()
+                val bytesLer = min(tamanho, 262_144L).toInt()
+                if (bytesLer <= 16) return null
+                val tail = ByteArray(bytesLer)
+                RandomAccessFile(file, "r").use { raf ->
+                    raf.seek(tamanho - bytesLer)
+                    raf.readFully(tail)
+                }
+                extrairTaskMetadadosUltralytics(String(tail, Charsets.UTF_8))
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        internal fun parseLabelsDeTextoOuYaml(conteudo: String, nomeArquivo: String = ""): List<String> {
+            val texto = conteudo.trim()
+            if (texto.isEmpty()) return emptyList()
+
+            val ehYaml = nomeArquivo.endsWith(".yaml", ignoreCase = true) ||
+                nomeArquivo.endsWith(".yml", ignoreCase = true) ||
+                Regex("""(?m)^\s*names\s*:""").containsMatchIn(texto)
+
+            if (ehYaml) {
+                val dictLabels = extrairLabelsMetadadosUltralytics(texto)
+                if (dictLabels.isNotEmpty()) return dictLabels
+
+                val inlineListMatch = Regex("""(?m)^\s*names\s*:\s*\[([^\]]+)\]""").find(texto)
+                if (inlineListMatch != null) {
+                    val itens = inlineListMatch.groupValues[1]
+                        .split(",")
+                        .map { it.trim().trim('\'', '"').trim() }
+                        .filter { it.isNotEmpty() }
+                    if (itens.isNotEmpty()) return itens
+                }
+
+                val linhas = texto.lines()
+                val idxNames = linhas.indexOfFirst { Regex("""^\s*names\s*:\s*(#.*)?$""").matches(it) }
+                if (idxNames >= 0) {
+                    val pares = linkedMapOf<Int, String>()
+                    val listaSeq = mutableListOf<String>()
+                    for (i in (idxNames + 1) until linhas.size) {
+                        val raw = linhas[i]
+                        val trim = raw.trim()
+                        if (trim.isEmpty() || trim.startsWith("#")) continue
+                        if (!raw.startsWith(" ") && !raw.startsWith("\t") && !trim.startsWith("-")) break
+
+                        val mMap = Regex("""^\s*(\d{1,3})\s*:\s*['"]?([^'"#\r\n]+?)['"]?\s*(?:#.*)?$""").find(raw)
+                        if (mMap != null) {
+                            val idx = mMap.groupValues[1].toIntOrNull()
+                            val nome = mMap.groupValues[2].trim()
+                            if (idx != null && nome.isNotEmpty()) pares[idx] = nome
+                            continue
+                        }
+                        val mItem = Regex("""^\s*-\s*['"]?([^'"#\r\n]+?)['"]?\s*(?:#.*)?$""").find(raw)
+                        if (mItem != null) {
+                            val nome = mItem.groupValues[1].trim()
+                            if (nome.isNotEmpty()) listaSeq.add(nome)
+                        }
+                    }
+                    if (pares.isNotEmpty()) {
+                        val maxIdx = pares.keys.maxOrNull() ?: 0
+                        return (0..maxIdx).mapNotNull { pares[it] }
+                    }
+                    if (listaSeq.isNotEmpty()) return listaSeq
+                }
+            }
+
+            return texto.lineSequence()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+                .toList()
+        }
 
         internal fun extrairLabelsMetadadosUltralytics(textoAscii: String): List<String> {
             val idxNames = textoAscii.indexOf("names")
@@ -1417,6 +2101,9 @@ class ObjectDetectorHelper(
                 } catch (_: Exception) {
                     // Metadados opcionais
                 }
+            }
+            if (labels.isEmpty() && file.name.equals("detector_doenca.tflite", ignoreCase = true)) {
+                labels.addAll(DEFAULT_4CLASS_DOENCA_LABELS)
             }
             return labels
         }

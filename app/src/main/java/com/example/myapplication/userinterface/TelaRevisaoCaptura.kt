@@ -38,6 +38,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -129,6 +130,39 @@ data class CaixaAuditavel(
     val centroY: Float get() = (normTop + normBottom) / 2f
     val largura: Float get() = (normRight - normLeft).coerceAtLeast(0f)
     val altura: Float get() = (normBottom - normTop).coerceAtLeast(0f)
+}
+
+internal data class SnapshotRevisao(
+    val caixas: List<CaixaAuditavel>,
+    val excluidas: List<CaixaAuditavel>
+)
+
+internal enum class ModoVisualizacaoOverlay(val labelCurto: String) {
+    COMPLETO("Rótulos"),
+    SO_CAIXAS("Só caixas"),
+    FOTO_LIMPA("Sem caixas")
+}
+
+internal fun resolverToqueEmCaixaExistente(
+    indiceAtualSelecionado: Int,
+    indiceTocado: Int,
+    rotuloAtual: String,
+    classesDisponiveis: List<String>,
+    classePreferida: String
+): Pair<Int, String> {
+    if (indiceAtualSelecionado != indiceTocado) {
+        return indiceTocado to rotuloAtual
+    }
+    if (classesDisponiveis.size > 1) {
+        val curIdx = classesDisponiveis.indexOfFirst { it.equals(rotuloAtual, ignoreCase = true) }
+        val novoRotulo = if (curIdx >= 0) {
+            classesDisponiveis[(curIdx + 1) % classesDisponiveis.size]
+        } else {
+            classePreferida.ifBlank { classesDisponiveis.first() }
+        }
+        return indiceTocado to novoRotulo
+    }
+    return indiceTocado to rotuloAtual
 }
 
 /**
@@ -374,7 +408,8 @@ internal fun fundirDeteccoesComSnapping(
 internal fun fundirContagemEDiagnosticoBreedAI(
     caixasContagem: List<DetEstilizada>,
     deteccoesSecundarias: List<DetEstilizada>,
-    iouMinimo: Float = 0.20f
+    iouMinimo: Float = 0.20f,
+    confiancaMinimaSecundaria: Float = 0.22f
 ): List<DetEstilizada> {
     if (deteccoesSecundarias.isEmpty()) return caixasContagem
     if (caixasContagem.isEmpty()) return deteccoesSecundarias
@@ -429,7 +464,7 @@ internal fun fundirContagemEDiagnosticoBreedAI(
     for (i in deteccoesSecundarias.indices) {
         if (i in pareadosSecundario) continue
         val sec = deteccoesSecundarias[i]
-        if (isRotuloGenerico(sec.rotulo) || sec.confianca < 0.45f) continue
+        if (isRotuloGenerico(sec.rotulo) || sec.confianca < confiancaMinimaSecundaria) continue
 
         val cxSec = (sec.normLeft + sec.normRight) / 2f
         val cySec = (sec.normTop + sec.normBottom) / 2f
@@ -479,11 +514,11 @@ fun TelaRevisaoCaptura(
         } else {
             val doPrimario = detectorHelper?.obterLabelsModelo()
                 ?.filter { it != "???" && it.isNotBlank() }
-                ?.takeIf { it.size in 2..15 }
+                ?.takeIf { it.size in 2..30 }
                 ?: emptyList()
             val doSecundario = detectorSecundarioHelper?.obterLabelsModelo()
                 ?.filter { it != "???" && it.isNotBlank() }
-                ?.takeIf { it.size in 2..15 }
+                ?.takeIf { it.size in 2..30 }
                 ?: emptyList()
             val combinadas = (labelsFiltro + doPrimario + doSecundario)
                 .map { it.trim() }
@@ -539,6 +574,32 @@ fun TelaRevisaoCaptura(
         mutableStateOf(!modoSemFrutos && caixasAuditadasIniciais == null && detectorHelper != null)
     }
     val caixasExcluidasManualmente = remember(fotoUri) { mutableListOf<CaixaAuditavel>() }
+    val historicoUndo = remember(fotoUri) { mutableStateListOf<SnapshotRevisao>() }
+    var modoOverlay by remember(fotoUri) { mutableStateOf(ModoVisualizacaoOverlay.COMPLETO) }
+
+    fun registrarPontoUndo() {
+        if (historicoUndo.size >= 25) {
+            historicoUndo.removeAt(0)
+        }
+        historicoUndo.add(
+            SnapshotRevisao(
+                caixas = caixas.toList(),
+                excluidas = caixasExcluidasManualmente.toList()
+            )
+        )
+    }
+
+    fun desfazerUltimoPasso() {
+        if (historicoUndo.isEmpty()) return
+        val anterior = historicoUndo.removeAt(historicoUndo.lastIndex)
+        caixas.clear()
+        caixas.addAll(anterior.caixas)
+        caixasExcluidasManualmente.clear()
+        caixasExcluidasManualmente.addAll(anterior.excluidas)
+        if (indiceSelecionado !in caixas.indices) {
+            indiceSelecionado = -1
+        }
+    }
 
     val imgAspect = remember(fotoUri) {
         try {
@@ -587,23 +648,12 @@ fun TelaRevisaoCaptura(
 
                     val candidatasContagem = mutableListOf<DetEstilizada>()
                     val labelsDoModelo = helper.obterLabelsModelo().filter { it != "???" && it.isNotBlank() }
-                    val filtroCasaComModelo = labelsFiltro.isNotEmpty() &&
-                            labelsDoModelo.isNotEmpty() &&
-                            labelsFiltro.any { f ->
-                                labelsDoModelo.any { m -> m.contains(f, ignoreCase = true) || f.contains(m, ignoreCase = true) }
-                            }
                     res.deteccoes.forEach { det ->
                         val cat = det.categories.firstOrNull()
-                        val label = (cat?.label ?: rotuloPadrao).lowercase(Locale.ROOT)
-                        val labelValido = when {
-                            labelsFiltro.isEmpty() -> true
-                            filtroCasaComModelo -> labelsFiltro.any { f ->
-                                label.equals(f, ignoreCase = true) || label.contains(f.lowercase(Locale.ROOT))
-                            } || label == "objeto" || (detectorSecundarioHelper != null && label in setOf("cacau", "fruto"))
-                            else -> labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) } ||
-                                    labelsDoModelo.any { m -> label.equals(m, ignoreCase = true) } ||
-                                    label == "cacau" || label == "fruto" || label == "objeto"
-                        }
+                        val rawLabel = cat?.label?.takeIf { it.isNotBlank() } ?: rotuloPadrao
+                        val labelLower = rawLabel.lowercase(Locale.ROOT)
+                        val labelValido = rotuloPassaFiltroModelo(rawLabel, labelsFiltro, labelsDoModelo) ||
+                            (detectorSecundarioHelper != null && labelLower in setOf("cacau", "fruto"))
                         if (!labelValido) return@forEach
 
                         val r = det.boundingBox
@@ -614,7 +664,7 @@ fun TelaRevisaoCaptura(
                                 normRight = (r.right / bmpW).coerceIn(0f, 1f),
                                 normBottom = (r.bottom / bmpH).coerceIn(0f, 1f),
                                 confianca = cat?.score ?: 0.85f,
-                                rotulo = cat?.label?.takeIf { it.isNotBlank() } ?: rotuloPadrao
+                                rotulo = rawLabel
                             )
                         )
                     }
@@ -704,6 +754,7 @@ fun TelaRevisaoCaptura(
     val classeAddAtual by rememberUpdatedState(classeParaAdicionar)
     val indiceSelState = rememberUpdatedState(indiceSelecionado)
     val pinchFotoState = rememberUpdatedState(pinchModoFoto)
+    val modoOverlayState = rememberUpdatedState(modoOverlay)
 
     Box(
         modifier = Modifier
@@ -755,34 +806,38 @@ fun TelaRevisaoCaptura(
                         val margemNormX = (24.dp.toPx() / (displayedW * zoomScale)).coerceAtLeast(0.01f)
                         val margemNormY = (24.dp.toPx() / (displayedH * zoomScale)).coerceAtLeast(0.01f)
 
+                        val somenteFotoLimpa = modoOverlayState.value == ModoVisualizacaoOverlay.FOTO_LIMPA
                         var activeAlca = AlcaCaixa.NENHUMA
                         var dragIdx = -1
                         val selAtual = indiceSelState.value
-                        if (selAtual in caixas.indices) {
-                            val alcaSel = detectarAlcaCaixaSelecionada(
-                                caixas[selAtual], startNorm.x, startNorm.y, margemNormX, margemNormY
-                            )
-                            if (alcaSel != AlcaCaixa.NENHUMA) {
-                                activeAlca = alcaSel
-                                dragIdx = selAtual
+                        if (!somenteFotoLimpa) {
+                            if (selAtual in caixas.indices) {
+                                val alcaSel = detectarAlcaCaixaSelecionada(
+                                    caixas[selAtual], startNorm.x, startNorm.y, margemNormX, margemNormY
+                                )
+                                if (alcaSel != AlcaCaixa.NENHUMA) {
+                                    activeAlca = alcaSel
+                                    dragIdx = selAtual
+                                }
                             }
-                        }
-                        if (dragIdx < 0) {
-                            val hit = selecionarIndiceCaixaNoToque(
-                                caixas = caixas,
-                                normTapX = startNorm.x,
-                                normTapY = startNorm.y,
-                                margemNormX = margemNormX,
-                                margemNormY = margemNormY
-                            )
-                            if (hit >= 0) {
-                                dragIdx = hit
-                                activeAlca = AlcaCaixa.CORPO
+                            if (dragIdx < 0) {
+                                val hit = selecionarIndiceCaixaNoToque(
+                                    caixas = caixas,
+                                    normTapX = startNorm.x,
+                                    normTapY = startNorm.y,
+                                    margemNormX = margemNormX,
+                                    margemNormY = margemNormY
+                                )
+                                if (hit >= 0) {
+                                    dragIdx = hit
+                                    activeAlca = AlcaCaixa.CORPO
+                                }
                             }
                         }
 
                         var isMultiTouch = false
                         var movedPastSlop = false
+                        var undoRegistradoNoGesto = false
                         var prevSinglePos = startScreen
                         val touchSlop = viewConfiguration.touchSlop
 
@@ -797,7 +852,11 @@ fun TelaRevisaoCaptura(
                                 val centroid = event.calculateCentroid(useCurrent = true)
                                 val curSel = indiceSelState.value
 
-                                if (curSel in caixas.indices && !pinchFotoState.value) {
+                                if (!somenteFotoLimpa && curSel in caixas.indices && !pinchFotoState.value) {
+                                    if (!undoRegistradoNoGesto) {
+                                        registrarPontoUndo()
+                                        undoRegistradoNoGesto = true
+                                    }
                                     var boxAtual = caixas[curSel]
                                     if (abs(zoomChange - 1f) > 0.001f) {
                                         boxAtual = redimensionarCaixaAuditavel(
@@ -827,7 +886,11 @@ fun TelaRevisaoCaptura(
                                     movedPastSlop = true
                                 }
                                 if (movedPastSlop) {
-                                    if (dragIdx in caixas.indices) {
+                                    if (!somenteFotoLimpa && dragIdx in caixas.indices) {
+                                        if (!undoRegistradoNoGesto) {
+                                            registrarPontoUndo()
+                                            undoRegistradoNoGesto = true
+                                        }
                                         if (indiceSelState.value != dragIdx) {
                                             indiceSelecionado = dragIdx
                                         }
@@ -853,7 +916,7 @@ fun TelaRevisaoCaptura(
                             }
                         } while (event.changes.any { it.pressed })
 
-                        if (!isMultiTouch && !movedPastSlop) {
+                        if (!somenteFotoLimpa && !isMultiTouch && !movedPastSlop) {
                             if (startNorm.x in 0f..1f && startNorm.y in 0f..1f) {
                                 val hitTap = selecionarIndiceCaixaNoToque(
                                     caixas = caixas,
@@ -863,20 +926,23 @@ fun TelaRevisaoCaptura(
                                     margemNormY = margemNormY
                                 )
                                 if (hitTap >= 0) {
-                                    if (classesAtual.size > 1) {
-                                        val atual = caixas[hitTap]
-                                        val novoRotulo = if (atual.rotulo.equals(classeAddAtual, ignoreCase = true)) {
-                                            val curIdx = classesAtual.indexOfFirst { it.equals(atual.rotulo, ignoreCase = true) }
-                                            classesAtual[((curIdx + 1).coerceAtLeast(0)) % classesAtual.size]
-                                        } else {
-                                            classeAddAtual
-                                        }
+                                    val atual = caixas[hitTap]
+                                    val (novoIdxSel, novoRotulo) = resolverToqueEmCaixaExistente(
+                                        indiceAtualSelecionado = indiceSelState.value,
+                                        indiceTocado = hitTap,
+                                        rotuloAtual = atual.rotulo,
+                                        classesDisponiveis = classesAtual,
+                                        classePreferida = classeAddAtual
+                                    )
+                                    if (novoRotulo != atual.rotulo) {
+                                        registrarPontoUndo()
                                         caixas[hitTap] = atual.copy(rotulo = novoRotulo)
                                     }
-                                    indiceSelecionado = hitTap
+                                    indiceSelecionado = novoIdxSel
                                 } else if (indiceSelState.value >= 0) {
                                     indiceSelecionado = -1
                                 } else {
+                                    registrarPontoUndo()
                                     val halfW = 0.07f
                                     val halfH = 0.07f
                                     val nova = CaixaAuditavel(
@@ -930,6 +996,7 @@ fun TelaRevisaoCaptura(
                     contentScale = ContentScale.Fit
                 )
 
+                if (modoOverlay != ModoVisualizacaoOverlay.FOTO_LIMPA) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val invZoom = 1f / zoomScale.coerceAtLeast(1f)
                     caixas.forEachIndexed { idx, caixa ->
@@ -973,32 +1040,35 @@ fun TelaRevisaoCaptura(
                             }
                         }
 
-                        val labelTxt = if (classesDisponiveis.size > 1 || !isRotuloGenerico(caixa.rotulo)) {
-                            "#${idx + 1} ${rotuloAmigavel(caixa.rotulo)}"
-                        } else if (caixa.manual) {
-                            "#${idx + 1} (Manual)"
-                        } else {
-                            "#${idx + 1}"
-                        }
-                        val textWidth = textPaint.measureText(labelTxt)
-                        val badgeHeight = 32f
+                        if (modoOverlay == ModoVisualizacaoOverlay.COMPLETO) {
+                            val labelTxt = if (classesDisponiveis.size > 1 || !isRotuloGenerico(caixa.rotulo)) {
+                                "#${idx + 1} ${rotuloAmigavel(caixa.rotulo)}"
+                            } else if (caixa.manual) {
+                                "#${idx + 1} (Manual)"
+                            } else {
+                                "#${idx + 1}"
+                            }
+                            val textWidth = textPaint.measureText(labelTxt)
+                            val badgeHeight = 32f
 
-                        badgePaint.color = cor.toArgb()
-                        drawContext.canvas.nativeCanvas.drawRoundRect(
-                            bLeft,
-                            (bTop - badgeHeight - 4f).coerceAtLeast(0f),
-                            bLeft + textWidth + 16f,
-                            bTop,
-                            8f, 8f,
-                            badgePaint
-                        )
-                        drawContext.canvas.nativeCanvas.drawText(
-                            labelTxt,
-                            bLeft + 8f,
-                            (bTop - 8f).coerceAtLeast(20f),
-                            textPaint
-                        )
+                            badgePaint.color = cor.toArgb()
+                            drawContext.canvas.nativeCanvas.drawRoundRect(
+                                bLeft,
+                                (bTop - badgeHeight - 4f).coerceAtLeast(0f),
+                                bLeft + textWidth + 16f,
+                                bTop,
+                                8f, 8f,
+                                badgePaint
+                            )
+                            drawContext.canvas.nativeCanvas.drawText(
+                                labelTxt,
+                                bLeft + 8f,
+                                (bTop - 8f).coerceAtLeast(20f),
+                                textPaint
+                            )
+                        }
                     }
+                }
                 }
             }
         }
@@ -1032,6 +1102,40 @@ fun TelaRevisaoCaptura(
                             color = Color(0xFFB0BEC5),
                             fontSize = 10.sp
                         )
+                    }
+
+                    if (!modoSemFrutos) {
+                        Surface(
+                            onClick = {
+                                val nextOrd = (modoOverlay.ordinal + 1) % ModoVisualizacaoOverlay.entries.size
+                                modoOverlay = ModoVisualizacaoOverlay.entries[nextOrd]
+                                if (modoOverlay == ModoVisualizacaoOverlay.FOTO_LIMPA) {
+                                    indiceSelecionado = -1
+                                }
+                            },
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color.White.copy(alpha = 0.14f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(
+                                    if (modoOverlay == ModoVisualizacaoOverlay.FOTO_LIMPA) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Alternar visualização das caixas",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    modoOverlay.labelCurto,
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(6.dp))
                     }
 
                     Surface(
@@ -1153,6 +1257,7 @@ fun TelaRevisaoCaptura(
                             ) {
                                 IconButton(
                                     onClick = {
+                                        registrarPontoUndo()
                                         caixas[indiceSelecionado] = redimensionarCaixaAuditavel(caixaAtual, 0.85f)
                                     },
                                     modifier = Modifier
@@ -1163,6 +1268,7 @@ fun TelaRevisaoCaptura(
                                 }
                                 IconButton(
                                     onClick = {
+                                        registrarPontoUndo()
                                         caixas[indiceSelecionado] = redimensionarCaixaAuditavel(caixaAtual, 1.18f)
                                     },
                                     modifier = Modifier
@@ -1173,6 +1279,7 @@ fun TelaRevisaoCaptura(
                                 }
                                 Button(
                                     onClick = {
+                                        registrarPontoUndo()
                                         caixasExcluidasManualmente.add(caixaAtual)
                                         caixas.removeAt(indiceSelecionado)
                                         indiceSelecionado = -1
@@ -1208,7 +1315,10 @@ fun TelaRevisaoCaptura(
                                 val corClasse = corParaLabel(classeLabel, manual = false)
                                 Surface(
                                     onClick = {
-                                        caixas[indiceSelecionado] = caixaAtual.copy(rotulo = classeLabel)
+                                        if (!caixaAtual.rotulo.equals(classeLabel, ignoreCase = true)) {
+                                            registrarPontoUndo()
+                                            caixas[indiceSelecionado] = caixaAtual.copy(rotulo = classeLabel)
+                                        }
                                         classeParaAdicionar = classeLabel
                                         indiceSelecionado = -1
                                     },
@@ -1301,26 +1411,16 @@ fun TelaRevisaoCaptura(
                                 ChipResumo("IA", totalIA, Color(0xFF69F0AE))
                                 ChipResumo("Manuais", totalManuais, Color(0xFF1565C0))
                             }
-                            if (totalManuais > 0) {
+                            if (historicoUndo.isNotEmpty()) {
                                 OutlinedButton(
-                                    onClick = {
-                                        val idxUltManual = caixas.indexOfLast { it.manual }
-                                        if (idxUltManual >= 0) {
-                                            caixas.removeAt(idxUltManual)
-                                            if (indiceSelecionado == idxUltManual) {
-                                                indiceSelecionado = -1
-                                            } else if (indiceSelecionado > idxUltManual) {
-                                                indiceSelecionado--
-                                            }
-                                        }
-                                    },
+                                    onClick = { desfazerUltimoPasso() },
                                     modifier = Modifier.height(28.dp),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                     shape = RoundedCornerShape(8.dp),
                                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF90CAF9)),
                                     border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF64B5F6))
                                 ) {
-                                    Text("↶ Desfazer Manual", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Text("↶ Desfazer", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -1336,14 +1436,14 @@ fun TelaRevisaoCaptura(
                             onClick = onRefazer,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(42.dp),
+                                .heightIn(min = 52.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
                         ) {
-                            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("REFAZER", fontSize = 12.sp)
+                            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Refazer", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         }
 
                         Button(
@@ -1355,20 +1455,22 @@ fun TelaRevisaoCaptura(
                                 }
                             },
                             modifier = Modifier
-                                .weight(1.4f)
-                                .height(42.dp),
+                                .weight(1.45f)
+                                .heightIn(min = 52.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (modoSemFrutos) Color(0xFFEF6C00) else Color(0xFF2E7D32)
                             ),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
                         ) {
-                            Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
                             Text(
-                                if (modoSemFrutos) "CONFIRMAR SEM FRUTOS (0)" else "SALVAR CONTAGEM ($totalObjetos)",
+                                if (modoSemFrutos) "Confirmar sem frutos (0)" else "Salvar contagem ($totalObjetos)",
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 12.sp
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -1409,6 +1511,7 @@ fun TelaRevisaoCaptura(
                                 }
                                 val labelFinal = classesDisponiveis.first { it.equals(limpa, ignoreCase = true) }
                                 if (indiceSelecionado in caixas.indices) {
+                                    registrarPontoUndo()
                                     caixas[indiceSelecionado] = caixas[indiceSelecionado].copy(rotulo = labelFinal)
                                 }
                                 classeParaAdicionar = labelFinal
@@ -1416,7 +1519,7 @@ fun TelaRevisaoCaptura(
                             mostrarDialogNovaClassificacao = false
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32))
-                    ) { Text("ADICIONAR") }
+                    ) { Text("Adicionar") }
                 },
                 dismissButton = {
                     TextButton(onClick = { mostrarDialogNovaClassificacao = false }) { Text("Cancelar") }

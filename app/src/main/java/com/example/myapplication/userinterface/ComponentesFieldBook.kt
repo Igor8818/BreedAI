@@ -2,8 +2,10 @@ package com.example.myapplication.userinterface
 
 import android.content.Context
 import android.net.Uri
+import android.widget.Toast
 import androidx.camera.core.ImageCapture
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -17,7 +19,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -31,6 +37,7 @@ import com.example.myapplication.userinterface.util.BoundingBoxOverlay
 import com.example.myapplication.userinterface.util.CameraWithAI
 import com.example.myapplication.userinterface.util.ObjectDetectorHelper
 import com.example.myapplication.userinterface.util.tirarFoto
+import kotlinx.coroutines.delay
 import org.tensorflow.lite.task.vision.detector.Detection
 import java.util.Locale
 
@@ -66,15 +73,61 @@ fun criarDetectorHelperBreedAI(
     )
 }
 
+internal fun deveUsarParDetectoresSecundario(modelConfig: ModelConfig): Boolean =
+    modelConfig.usarModeloSecundario
+
+internal fun rotuloPassaFiltroModelo(
+    labelBruto: String,
+    labelsFiltro: List<String>,
+    labelsModelo: List<String>
+): Boolean {
+    fun norm(s: String): String {
+        val nfd = java.text.Normalizer.normalize(
+            s.trim().lowercase(Locale.ROOT),
+            java.text.Normalizer.Form.NFD
+        )
+        return nfd.replace(Regex("\\p{M}+"), "")
+    }
+
+    val normRaw = norm(labelBruto)
+    val normFriendly = norm(rotuloAmigavel(labelBruto))
+    if (labelsFiltro.isEmpty()) return true
+    val filtrosNorm = labelsFiltro.map { norm(it) }.filter { it.isNotBlank() }
+    if (filtrosNorm.isEmpty()) return true
+
+    val bateDireto = filtrosNorm.any { f ->
+        f == normRaw || f == normFriendly ||
+            normRaw.contains(f) || normFriendly.contains(f) ||
+            (f.length >= 3 && (f.contains(normRaw) || f.contains(normFriendly)))
+    }
+    if (bateDireto) return true
+
+    if (normRaw in setOf("podridaoparda", "moniliase", "sadio", "vassourabruxa") &&
+        filtrosNorm.all { it in setOf("cacau", "fruto", "objeto") }
+    ) {
+        return true
+    }
+
+    val filtroCasaComModelo = labelsModelo.isNotEmpty() &&
+        filtrosNorm.any { f ->
+            labelsModelo.any { m ->
+                val nm = norm(m)
+                val nf = norm(rotuloAmigavel(m))
+                nm == f || nf == f || nm.contains(f) || nf.contains(f) || f.contains(nm) || f.contains(nf)
+            }
+        }
+    return if (filtroCasaComModelo) {
+        normRaw == "objeto"
+    } else {
+        labelsModelo.any { norm(it) == normRaw } || normRaw in setOf("objeto", "cacau", "fruto")
+    }
+}
+
 fun criarParDetectoresBreedAI(
     context: Context,
     modelConfig: ModelConfig
 ): Pair<ObjectDetectorHelper, ObjectDetectorHelper?> {
-    val ehDoencaEmbutido = modelConfig.modeloInternoPath.isNullOrBlank() &&
-            modelConfig.modeloExternoUri == null &&
-            modelConfig.modeloSelecionado?.nomeArquivo == "detector_doenca.tflite"
-
-    if (!modelConfig.usarModeloSecundario && !ehDoencaEmbutido) {
+    if (!deveUsarParDetectoresSecundario(modelConfig)) {
         return criarDetectorHelperBreedAI(context, modelConfig) to null
     }
 
@@ -121,6 +174,8 @@ fun CameraFullscreenBreedAI(
     tituloHud: String,
     idParaArquivo: String,
     modoSemFrutos: Boolean,
+    modoTesteRapido: Boolean = false,
+    onThresholdChange: ((Float) -> Unit)? = null,
     onCancelar: () -> Unit,
     onFotoCapturada: (Uri, List<Detection>, Float, Float) -> Unit
 ) {
@@ -129,37 +184,48 @@ fun CameraFullscreenBreedAI(
     val ultimoResultadoValidoState = remember { mutableStateOf<ObjectDetectorHelper.ResultadoDeteccao?>(null) }
     val ultimoTimestampValidoState = remember { mutableLongStateOf(0L) }
 
-    val labelsModelo = remember(detectorHelper, modelConfig.modeloSelecionado, modelConfig.modeloInternoPath) {
-        detectorHelper.obterLabelsModelo().filter { it != "???" && it.isNotBlank() }
+    val haptics = LocalHapticFeedback.current
+    var lanternaAtiva by remember { mutableStateOf(false) }
+    var suportaLanterna by remember { mutableStateOf(false) }
+    var zoomRatio by remember { mutableFloatStateOf(1f) }
+    var capturandoFoto by remember { mutableStateOf(false) }
+    var focoPonto by remember { mutableStateOf<Offset?>(null) }
+    var thresholdAoVivo by remember(modelConfig.threshold) { mutableFloatStateOf(modelConfig.threshold) }
+
+    LaunchedEffect(focoPonto) {
+        if (focoPonto != null) {
+            delay(950L)
+            focoPonto = null
+        }
     }
-    val filtroCasaComModelo = remember(modelConfig.labelsFiltro, labelsModelo) {
-        modelConfig.labelsFiltro.isNotEmpty() &&
-            labelsModelo.isNotEmpty() &&
-            modelConfig.labelsFiltro.any { f ->
-                labelsModelo.any { m -> m.contains(f, ignoreCase = true) || f.contains(m, ignoreCase = true) }
-            }
+
+    val labelsModelo = remember(
+        detectorHelper,
+        modelConfig.modeloSelecionado,
+        modelConfig.modeloInternoPath,
+        modelConfig.labelsFiltro
+    ) {
+        detectorHelper.obterLabelsModelo().filter { it != "???" && it.isNotBlank() }
     }
 
     fun filtrarDeteccoes(deteccoes: List<Detection>): List<Detection> {
         if (modoSemFrutos) return emptyList()
         return deteccoes.filter { det ->
-            val label = det.categories.firstOrNull()?.label?.lowercase(Locale.ROOT) ?: ""
+            val label = det.categories.firstOrNull()?.label ?: ""
             val score = det.categories.firstOrNull()?.score ?: 0f
-            val labelPermitido = when {
-                modelConfig.labelsFiltro.isEmpty() -> true
-                filtroCasaComModelo -> modelConfig.labelsFiltro.any { f ->
-                    label.equals(f, ignoreCase = true) || label.contains(f.lowercase(Locale.ROOT))
-                } || label == "objeto"
-                else -> modelConfig.labelsFiltro.any { f -> label.contains(f.lowercase(Locale.ROOT)) } ||
-                    labelsModelo.any { m -> label.equals(m, ignoreCase = true) } ||
-                    label in setOf("objeto", "cacau", "fruto")
-            }
-            score >= modelConfig.threshold && labelPermitido
+            score >= thresholdAoVivo && rotuloPassaFiltroModelo(label, modelConfig.labelsFiltro, labelsModelo)
         }
     }
 
     Box(Modifier.fillMaxSize()) {
-        CameraWithAI(detectorHelper, imageCapture) { res ->
+        CameraWithAI(
+            helper = detectorHelper,
+            capture = imageCapture,
+            lanternaAtiva = lanternaAtiva,
+            zoomRatio = zoomRatio,
+            onSuportaLanterna = { suportaLanterna = it },
+            onTapFocus = { x, y -> focoPonto = Offset(x, y) }
+        ) { res ->
             resultadoAtualState.value = res
             if (res.deteccoes.isNotEmpty()) {
                 ultimoResultadoValidoState.value = res
@@ -173,13 +239,40 @@ fun CameraFullscreenBreedAI(
             ultimoTimestampValidoState = ultimoTimestampValidoState,
             tituloHud = tituloHud,
             modoSemFrutos = modoSemFrutos,
+            modoTesteRapido = modoTesteRapido,
+            suportaLanterna = suportaLanterna,
+            lanternaAtiva = lanternaAtiva,
+            onToggleLanterna = { lanternaAtiva = !lanternaAtiva },
+            zoomRatio = zoomRatio,
+            onZoomChange = { zoomRatio = it },
+            capturandoFoto = capturandoFoto,
+            focoPonto = focoPonto,
+            thresholdAoVivo = thresholdAoVivo,
+            onThresholdSliderChange = { novo ->
+                thresholdAoVivo = novo
+                detectorHelper.scoreThreshold = novo
+                onThresholdChange?.invoke(novo)
+            },
             filtrarDeteccoes = ::filtrarDeteccoes,
             onCancelar = onCancelar,
             onCapturarClick = { listaFiltrada, frameWidth, frameHeight ->
+                if (capturandoFoto) return@CameraLiveOverlayAndControls
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                capturandoFoto = true
                 val snapshotCaixas = listaFiltrada.toList()
-                tirarFoto(context, imageCapture, idParaArquivo) { uri ->
-                    onFotoCapturada(uri, snapshotCaixas, frameWidth, frameHeight)
-                }
+                tirarFoto(
+                    context = context,
+                    capture = imageCapture,
+                    id = idParaArquivo,
+                    onErro = { msg ->
+                        capturandoFoto = false
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                    },
+                    onSucesso = { uri ->
+                        capturandoFoto = false
+                        onFotoCapturada(uri, snapshotCaixas, frameWidth, frameHeight)
+                    }
+                )
             }
         )
     }
@@ -192,6 +285,16 @@ private fun BoxScope.CameraLiveOverlayAndControls(
     ultimoTimestampValidoState: State<Long>,
     tituloHud: String,
     modoSemFrutos: Boolean,
+    modoTesteRapido: Boolean,
+    suportaLanterna: Boolean,
+    lanternaAtiva: Boolean,
+    onToggleLanterna: () -> Unit,
+    zoomRatio: Float,
+    onZoomChange: (Float) -> Unit,
+    capturandoFoto: Boolean,
+    focoPonto: Offset?,
+    thresholdAoVivo: Float,
+    onThresholdSliderChange: (Float) -> Unit,
     filtrarDeteccoes: (List<Detection>) -> List<Detection>,
     onCancelar: () -> Unit,
     onCapturarClick: (List<Detection>, Float, Float) -> Unit
@@ -208,7 +311,7 @@ private fun BoxScope.CameraLiveOverlayAndControls(
     val deteccoesAtuais = resultadoAtivo?.deteccoes ?: emptyList()
     val frameWidth = resultadoAtivo?.larguraImagem ?: 1f
     val frameHeight = resultadoAtivo?.alturaImagem ?: 1f
-    val listaFiltrada = remember(resultadoAtivo, modoSemFrutos) {
+    val listaFiltrada = remember(resultadoAtivo, modoSemFrutos, thresholdAoVivo, deteccoesAtuais) {
         filtrarDeteccoes(deteccoesAtuais)
     }
 
@@ -221,11 +324,48 @@ private fun BoxScope.CameraLiveOverlayAndControls(
         )
     }
 
+    if (focoPonto != null) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawCircle(
+                color = Color(0xFF00E676),
+                radius = 34.dp.toPx(),
+                center = focoPonto,
+                style = Stroke(width = 2.5.dp.toPx())
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.7f),
+                radius = 4.dp.toPx(),
+                center = focoPonto
+            )
+        }
+    }
+
+    if (suportaLanterna) {
+        IconButton(
+            onClick = onToggleLanterna,
+            modifier = Modifier
+                .statusBarsPadding()
+                .align(Alignment.TopStart)
+                .padding(start = 10.dp, top = 6.dp)
+                .background(
+                    if (lanternaAtiva) Color(0xFFFFC107).copy(alpha = 0.90f) else Color.Black.copy(alpha = 0.65f),
+                    CircleShape
+                )
+        ) {
+            Icon(
+                if (lanternaAtiva) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                contentDescription = if (lanternaAtiva) "Desligar lanterna" else "Ligar lanterna",
+                tint = if (lanternaAtiva) Color.Black else Color.White,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
+
     Surface(
         Modifier
             .statusBarsPadding()
             .align(Alignment.TopCenter)
-            .padding(horizontal = 52.dp, vertical = 6.dp),
+            .padding(horizontal = 56.dp, vertical = 6.dp),
         color = Color.Black.copy(alpha = 0.78f),
         shape = RoundedCornerShape(14.dp)
     ) {
@@ -242,7 +382,7 @@ private fun BoxScope.CameraLiveOverlayAndControls(
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                if (modoSemFrutos) "• Sem Frutos (0)" else "• IA: ${listaFiltrada.size}",
+                if (modoSemFrutos) "• Sem Prod. (0)" else "• IA: ${listaFiltrada.size}",
                 color = if (modoSemFrutos) Color(0xFFFFB74D) else Color(0xFF00E676),
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp
@@ -260,22 +400,115 @@ private fun BoxScope.CameraLiveOverlayAndControls(
         Icon(Icons.Default.Cancel, "Fechar câmera", tint = Color.White, modifier = Modifier.size(30.dp))
     }
 
-    ExtendedFloatingActionButton(
-        onClick = { onCapturarClick(listaFiltrada, frameWidth, frameHeight) },
+    Column(
         modifier = Modifier
             .navigationBarsPadding()
             .align(Alignment.BottomCenter)
-            .padding(bottom = 18.dp),
-        containerColor = if (modoSemFrutos) Color(0xFFEF6C00) else VERDE_PRINCIPAL,
-        contentColor = Color.White,
-        text = {
-            Text(
-                if (modoSemFrutos) "CAPTURAR PROVA (0 FRUTOS)" else "CAPTURAR (${listaFiltrada.size})",
-                fontWeight = FontWeight.Bold
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        if (modoTesteRapido) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.78f),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Certeza mínima ao vivo: ${(thresholdAoVivo * 100).toInt()}%",
+                            color = Color.White,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "${listaFiltrada.size} na tela",
+                            color = Color(0xFF00E676),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Slider(
+                        value = (thresholdAoVivo * 100f).coerceIn(10f, 95f),
+                        onValueChange = { pct -> onThresholdSliderChange((pct.toInt() / 100f).coerceIn(0.10f, 0.95f)) },
+                        valueRange = 10f..95f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color(0xFF00E676),
+                            activeTrackColor = Color(0xFF00E676)
+                        )
+                    )
+                }
+            }
+        }
+
+        // Atalho de Zoom 1x / 2x
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            listOf(1f to "1x", 2f to "2x").forEach { (zVal, zLabel) ->
+                val ativo = kotlin.math.abs(zoomRatio - zVal) < 0.1f
+                Surface(
+                    onClick = { onZoomChange(zVal) },
+                    shape = RoundedCornerShape(18.dp),
+                    color = if (ativo) VERDE_PRINCIPAL else Color.Black.copy(alpha = 0.72f),
+                    border = BorderStroke(1.dp, if (ativo) Color(0xFF00E676) else Color.White.copy(alpha = 0.45f))
+                ) {
+                    Text(
+                        zLabel,
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
+                    )
+                }
+            }
+        }
+
+        if (modoTesteRapido) {
+            Button(
+                onClick = onCancelar,
+                modifier = Modifier.height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = VERDE_PRINCIPAL)
+            ) {
+                Icon(Icons.Default.Check, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Concluir teste (${listaFiltrada.size} detectados)", fontWeight = FontWeight.Bold)
+            }
+        } else {
+            ExtendedFloatingActionButton(
+                onClick = { onCapturarClick(listaFiltrada, frameWidth, frameHeight) },
+                containerColor = if (modoSemFrutos) Color(0xFFEF6C00) else VERDE_PRINCIPAL,
+                contentColor = Color.White,
+                text = {
+                    if (capturandoFoto) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Salvando foto...", fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Text(
+                            if (modoSemFrutos) "Registrar sem produção (0)" else "Capturar (${listaFiltrada.size})",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                icon = { if (!capturandoFoto) Icon(Icons.Default.PhotoCamera, null) }
             )
-        },
-        icon = { Icon(Icons.Default.PhotoCamera, null) }
-    )
+        }
+    }
 }
 
 /**
@@ -288,20 +521,22 @@ fun SeletorSituacaoPlantaCard(
     situacao: SituacaoPlanta,
     onSituacaoChange: (SituacaoPlanta) -> Unit,
     motivoNaoAvaliavel: String,
-    onMotivoChange: (String) -> Unit
+    onMotivoChange: (String) -> Unit,
+    rotuloSemUnidades: String = "Sem Frutos",
+    motivosDisponiveis: List<String> = MOTIVOS_NAO_AVALIAVEL
 ) {
-    Card(
+    ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+        colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                "Estado Fenotípico da Planta",
+                "Condição da planta",
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp,
                 color = Color(0xFF1B5E20)
@@ -327,7 +562,7 @@ fun SeletorSituacaoPlantaCard(
                         }
                         val rotuloExibido = when (opcao) {
                             SituacaoPlanta.NORMAL -> "Normal"
-                            SituacaoPlanta.SEM_FRUTOS -> "Sem Frutos"
+                            SituacaoPlanta.SEM_FRUTOS -> rotuloSemUnidades
                             SituacaoPlanta.NAO_AVALIAVEL -> "Não Avaliável"
                         }
                         Surface(
@@ -362,7 +597,7 @@ fun SeletorSituacaoPlantaCard(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            "Exige foto comprobatória • registra 0 frutos",
+                            "Exige foto comprobatória • registra 0",
                             fontSize = 11.sp,
                             color = Color(0xFFE65100),
                             fontWeight = FontWeight.SemiBold,
@@ -375,7 +610,7 @@ fun SeletorSituacaoPlantaCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        MOTIVOS_NAO_AVALIAVEL.forEach { motivo ->
+                        motivosDisponiveis.forEach { motivo ->
                             FilterChip(
                                 selected = motivoNaoAvaliavel == motivo,
                                 onClick = { onMotivoChange(motivo) },
@@ -407,13 +642,35 @@ fun BlocoVariaveisExtrasCard(
     onToggleVariavel: ((VariavelExtra, Boolean) -> Unit)? = null,
     onDesativarTodas: (() -> Unit)? = null
 ) {
+    var mostrarAjudaModoRapido by remember { mutableStateOf(false) }
+
+    if (mostrarAjudaModoRapido) {
+        AlertDialog(
+            onDismissRequest = { mostrarAjudaModoRapido = false },
+            title = { Text("Anotações da coleta", fontWeight = FontWeight.Bold, fontSize = 16.sp) },
+            text = {
+                Text(
+                    "Modo rápido salva e exporta somente a contagem feita pela IA na foto. Para anotar outros campos (ex: Vírus, Nota, Diâmetro), toque em qualquer opção abaixo ou em + Criar.",
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { mostrarAjudaModoRapido = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = VERDE_PRINCIPAL)
+                ) { Text("Entendi") }
+            }
+        )
+    }
+
     if (variaveisAtivas.isEmpty() && onToggleVariavel == null) {
-        Card(
+        ElevatedCard(
             onClick = onAbrirConfigVariaveis,
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
-            border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+            colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
         ) {
             Row(
                 modifier = Modifier
@@ -432,15 +689,16 @@ fun BlocoVariaveisExtrasCard(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Variáveis Extras da Coleta",
+                        "Anotações extras",
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF1B5E20)
                     )
                     Text(
-                        "Toque para ativar anotações opcionais ou criar novas",
+                        "Opcional • Ative campos manuais ou crie novos",
                         fontSize = 11.sp,
-                        color = Color(0xFF5F6F61)
+                        color = Color(0xFF5F6F61),
+                        maxLines = 1
                     )
                 }
                 Text(
@@ -454,11 +712,11 @@ fun BlocoVariaveisExtrasCard(
         return
     }
 
-    Card(
+    ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+        colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -469,16 +727,29 @@ fun BlocoVariaveisExtrasCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.Tune, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        if (variaveisAtivas.isEmpty()) "Variáveis Extras (Somente Contagem IA)"
-                        else "Variáveis Extras (${variaveisAtivas.size} ativa(s))",
+                        if (variaveisAtivas.isEmpty()) "Anotações extras"
+                        else "Anotações extras (${variaveisAtivas.size})",
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
-                        color = Color(0xFF1B5E20)
+                        color = Color(0xFF1B5E20),
+                        maxLines = 1
                     )
+                    Spacer(Modifier.width(4.dp))
+                    IconButton(
+                        onClick = { mostrarAjudaModoRapido = true },
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Info,
+                            contentDescription = "Ajuda sobre anotações extras",
+                            tint = Color(0xFF5F6F61),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (valoresAtuais.isNotEmpty()) {
@@ -486,14 +757,14 @@ fun BlocoVariaveisExtrasCard(
                             onClick = { valoresAtuais.clear() },
                             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Text("Limpar", fontSize = 11.sp, color = Color(0xFFC62828), fontWeight = FontWeight.SemiBold)
+                            Text("Limpar", fontSize = 11.sp, color = Color(0xFF546E7A), fontWeight = FontWeight.SemiBold)
                         }
                     }
                     TextButton(
                         onClick = onAbrirConfigVariaveis,
                         contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                     ) {
-                        Text("+ Criar / Excluir", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = VERDE_PRINCIPAL)
+                        Text("+ Gerenciar", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = VERDE_PRINCIPAL)
                     }
                 }
             }
@@ -509,7 +780,7 @@ fun BlocoVariaveisExtrasCard(
                             onClick = onDesativarTodas,
                             label = {
                                 Text(
-                                    "Somente Contagem IA",
+                                    "Somente contagem IA",
                                     fontSize = 11.sp,
                                     fontWeight = if (variaveisAtivas.isEmpty()) FontWeight.Bold else FontWeight.Medium
                                 )
@@ -524,14 +795,6 @@ fun BlocoVariaveisExtrasCard(
                         )
                     }
                 }
-            }
-
-            if (variaveisAtivas.isEmpty()) {
-                Text(
-                    "Modo rápido: registra e exporta somente a contagem da IA (toque em um item acima para adicionar à coleta).",
-                    fontSize = 11.sp,
-                    color = Color(0xFF5F6F61)
-                )
             }
 
             variaveisAtivas.forEach { variavel ->
@@ -684,12 +947,13 @@ fun ConteudoGerenciarVariaveisExtras(
             },
             enabled = novoNome.isNotBlank() &&
                     (novoTipo != TipoVariavelExtra.LISTA_OPCOES || novasOpcoesTxt.isNotBlank()),
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            shape = RoundedCornerShape(12.dp),
             colors = ButtonDefaults.buttonColors(containerColor = VERDE_PRINCIPAL)
         ) {
             Icon(Icons.Default.Add, null)
             Spacer(Modifier.width(6.dp))
-            Text("ADICIONAR VARIÁVEL")
+            Text("Adicionar variável", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         }
     }
 }
@@ -704,7 +968,7 @@ fun DialogGerenciarVariaveisExtras(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Variáveis Extras da Coleta", fontWeight = FontWeight.Bold, fontSize = 18.sp) },
+        title = { Text("Anotações extras da coleta", fontWeight = FontWeight.Bold, fontSize = 18.sp) },
         text = {
             Column(
                 modifier = Modifier
@@ -723,9 +987,10 @@ fun DialogGerenciarVariaveisExtras(
         confirmButton = {
             Button(
                 onClick = onDismiss,
+                modifier = Modifier.heightIn(min = 48.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = VERDE_PRINCIPAL)
             ) {
-                Text("CONCLUÍDO")
+                Text("Concluído", fontWeight = FontWeight.SemiBold)
             }
         }
     )

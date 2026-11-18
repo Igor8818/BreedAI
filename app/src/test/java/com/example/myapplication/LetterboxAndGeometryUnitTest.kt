@@ -9,6 +9,7 @@ import com.example.myapplication.userinterface.fundirDeteccoesComSnapping
 import com.example.myapplication.userinterface.iouNorm
 import com.example.myapplication.userinterface.moverCaixaAuditavel
 import com.example.myapplication.userinterface.redimensionarCaixaAuditavel
+import com.example.myapplication.userinterface.resolverToqueEmCaixaExistente
 import com.example.myapplication.userinterface.selecionarIndiceCaixaNoToque
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -266,5 +267,40 @@ class LetterboxAndGeometryUnitTest {
         assertEquals(0.55f, minima.normLeft, 0.001f)
         assertEquals(0.55f, minima.normTop, 0.001f)
         assertEquals(0.05f, minima.largura, 0.001f)
+    }
+
+    @Test
+    fun `testPrimeiroToqueApenasSelecionaCaixaSemSobrescreverClasseIA`() {
+        val classes = listOf("Sadio", "VassouraBruxa", "PodridaoParda")
+
+        // 1o toque em caixa não selecionada: seleciona sem alterar o rótulo da IA
+        val primeiro = resolverToqueEmCaixaExistente(
+            indiceAtualSelecionado = -1,
+            indiceTocado = 1,
+            rotuloAtual = "PodridaoParda",
+            classesDisponiveis = classes,
+            classePreferida = "Sadio"
+        )
+        assertEquals(1 to "PodridaoParda", primeiro)
+
+        // 2o toque na caixa já selecionada: cicla para a próxima classe
+        val segundo = resolverToqueEmCaixaExistente(
+            indiceAtualSelecionado = 1,
+            indiceTocado = 1,
+            rotuloAtual = "PodridaoParda",
+            classesDisponiveis = classes,
+            classePreferida = "Sadio"
+        )
+        assertEquals(1 to "Sadio", segundo)
+
+        // 3o toque na caixa já selecionada: cicla de "Sadio" para "VassouraBruxa"
+        val terceiro = resolverToqueEmCaixaExistente(
+            indiceAtualSelecionado = 1,
+            indiceTocado = 1,
+            rotuloAtual = "Sadio",
+            classesDisponiveis = classes,
+            classePreferida = "Sadio"
+        )
+        assertEquals(1 to "VassouraBruxa", terceiro)
     }
 }

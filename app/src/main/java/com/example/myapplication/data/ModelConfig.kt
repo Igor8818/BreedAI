@@ -8,7 +8,8 @@ data class ModelEmbutido(
     val nomeArquivo: String,
     val nomeExibicao: String,
     val descricao: String,
-    val labelsDefault: List<String>
+    val labelsDefault: List<String>,
+    val thresholdSugerido: Float = 0.30f
 )
 
 val LABELS_DOENCA_CACAU = listOf("PodridaoParda", "Moniliase", "Sadio", "VassouraBruxa")
@@ -22,7 +23,8 @@ data class ModelConfig(
     val threshold: Float = 0.30f,
     val maxResultados: Int = 25,
     val usarModeloSecundario: Boolean = false,
-    val modeloSecundarioArquivo: String = "detector_doenca.tflite"
+    val modeloSecundarioArquivo: String = "detector_doenca.tflite",
+    val incluirPercentualClassesCsv: Boolean = false
 ) {
     val nomeExibicao: String
         get() = when {
@@ -48,6 +50,7 @@ data class ModelConfig(
             put("maxResultados", maxResultados)
             put("usarModeloSecundario", usarModeloSecundario)
             put("modeloSecundarioArquivo", modeloSecundarioArquivo)
+            put("incluirPercentualClassesCsv", incluirPercentualClassesCsv)
             put("labelsFiltro", JSONArray().apply {
                 labelsFiltro.forEach { put(it) }
             })
@@ -61,8 +64,9 @@ data class ModelConfig(
                 val root = JSONObject(jsonStr)
                 val nome = root.optString("nomeExibicao", "").trim()
                 val threshold = root.optDouble("threshold", 0.30).toFloat().coerceIn(0.05f, 0.99f)
-                val maxResultados = root.optInt("maxResultados", 25).coerceIn(1, 50)
+                val maxResultados = root.optInt("maxResultados", 25).coerceIn(1, 300)
                 val usarSecundario = root.optBoolean("usarModeloSecundario", false)
+                val incluirPct = root.optBoolean("incluirPercentualClassesCsv", false)
                 val modeloSec = root.optString("modeloSecundarioArquivo", "detector_doenca.tflite")
                     .trim()
                     .ifBlank { "detector_doenca.tflite" }
@@ -78,7 +82,8 @@ data class ModelConfig(
                     threshold = threshold,
                     maxResultados = maxResultados,
                     usarModeloSecundario = usarSecundario,
-                    modeloSecundarioArquivo = modeloSec
+                    modeloSecundarioArquivo = modeloSec,
+                    incluirPercentualClassesCsv = incluirPct
                 )
             } catch (_: Exception) {
                 null
@@ -92,7 +97,8 @@ data class ModelConfig(
         val threshold: Float,
         val maxResultados: Int,
         val usarModeloSecundario: Boolean = false,
-        val modeloSecundarioArquivo: String = "detector_doenca.tflite"
+        val modeloSecundarioArquivo: String = "detector_doenca.tflite",
+        val incluirPercentualClassesCsv: Boolean = false
     )
 }
 
@@ -101,24 +107,28 @@ val MODELOS_EMBUTIDOS = listOf(
         nomeArquivo = "detector.tflite",
         nomeExibicao = "Contagem Geral (Pré-carregado)",
         descricao = "Conta frutos de cacau rapidamente ao vivo na câmera.",
-        labelsDefault = listOf("cacau", "fruto")
+        labelsDefault = listOf("cacau", "fruto"),
+        thresholdSugerido = 0.30f
     ),
     ModelEmbutido(
         nomeArquivo = "detector_doenca.tflite",
         nomeExibicao = "Cacau Doenças (Pré-carregado)",
         descricao = "Conta frutos de cacau e separa automaticamente em Sadio, Podridão Parda, Monilíase e Vassoura de Bruxa.",
-        labelsDefault = LABELS_DOENCA_CACAU
+        labelsDefault = LABELS_DOENCA_CACAU,
+        thresholdSugerido = 0.25f
     ),
     ModelEmbutido(
         nomeArquivo = "detector_frutas_coco.tflite",
         nomeExibicao = "Detector de Banana (Exemplo)",
         descricao = "Exemplo pronto focado apenas em Banana, simulando um modelo importado de outra cultura.",
-        labelsDefault = listOf("banana")
+        labelsDefault = listOf("banana"),
+        thresholdSugerido = 0.20f
     ),
     ModelEmbutido(
         nomeArquivo = "detector_frutas_coco.tflite",
         nomeExibicao = "Detector de Maçã (Exemplo)",
         descricao = "Exemplo pronto focado apenas em Maçã, demonstrando o app com outro fruto separado.",
-        labelsDefault = listOf("apple")
+        labelsDefault = listOf("apple"),
+        thresholdSugerido = 0.20f
     )
 )

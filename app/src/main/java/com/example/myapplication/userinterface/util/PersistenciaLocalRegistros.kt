@@ -23,17 +23,75 @@ object PersistenciaLocalRegistros {
     private const val FILE_REGISTROS = "registros_breedai_local.json"
     private const val FILE_FORMULARIO = "formulario_breedai.json"
     private const val FILE_VARIAVEIS = "variaveis_extras_breedai.json"
+    private const val DIR_COLETAS = "coletas"
+    private const val DIR_MODELOS = "modelos_ia"
     private val fileLock = Any()
 
-    // ── REGISTROS DE COLETA (100% offline com AtomicFile) ──
+    data class ResumoColetaSalva(
+        val id: String,
+        val nome: String,
+        val templateId: String,
+        val totalRegistros: Int,
+        val totalPontosRota: Int,
+        val atualizadoEm: Long
+    )
+
+    data class ModeloImportadoLocal(
+        val path: String,
+        val nomeExibicao: String,
+        val tamanhoBytes: Long,
+        val modificadoEm: Long
+    )
+
+    private fun safeColetaId(coletaId: String): String =
+        coletaId.trim().ifBlank { "coleta_padrao" }.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+
+    private fun arquivoColetaRelativo(coletaId: String, sufixo: String): String =
+        "$DIR_COLETAS/${safeColetaId(coletaId)}_$sufixo"
+
+    private fun garantirDiretorioColetas(context: Context) {
+        try {
+            File(context.filesDir, DIR_COLETAS).mkdirs()
+        } catch (_: Exception) {}
+    }
+
+    private fun migrarLegadoSeNecessario(context: Context, coletaId: String) {
+        if (safeColetaId(coletaId) != "coleta_padrao") return
+        garantirDiretorioColetas(context)
+        val regColeta = File(context.filesDir, arquivoColetaRelativo(coletaId, "registros.json"))
+        val regLegado = File(context.filesDir, FILE_REGISTROS)
+        if (!regColeta.exists() && regLegado.exists() && regLegado.length() > 0L) {
+            try {
+                regLegado.copyTo(regColeta, overwrite = true)
+            } catch (_: Exception) {}
+        }
+        val formColeta = File(context.filesDir, arquivoColetaRelativo(coletaId, "formulario.json"))
+        val formLegado = File(context.filesDir, FILE_FORMULARIO)
+        if (!formColeta.exists() && formLegado.exists() && formLegado.length() > 0L) {
+            try {
+                formLegado.copyTo(formColeta, overwrite = true)
+            } catch (_: Exception) {}
+        }
+    }
+
+    // ── REGISTROS DE COLETA (100% offline com AtomicFile + Multi-Coletas) ──
 
     fun salvarRegistros(context: Context, registros: List<RegistroColeta>) {
         val snapshot = registros.toList()
-        escreverAtomico(context, FILE_REGISTROS, serializarRegistrosParaJson(snapshot).toString())
+        val json = serializarRegistrosParaJson(snapshot).toString()
+        val cfg = carregarConfigColeta(context)
+        garantirDiretorioColetas(context)
+        escreverAtomico(context, arquivoColetaRelativo(cfg.coletaId, "registros.json"), json)
+        escreverAtomico(context, FILE_REGISTROS, json)
+        salvarMetaColetaArquivo(context, cfg)
     }
 
     fun carregarRegistros(context: Context): List<RegistroColeta> {
-        val json = lerAtomico(context, FILE_REGISTROS) ?: return emptyList()
+        val cfg = carregarConfigColeta(context)
+        migrarLegadoSeNecessario(context, cfg.coletaId)
+        val json = lerAtomico(context, arquivoColetaRelativo(cfg.coletaId, "registros.json"))
+            ?: lerAtomico(context, FILE_REGISTROS)
+            ?: return emptyList()
         return try {
             deserializarRegistrosDeJson(json)
         } catch (e: Exception) {
@@ -184,20 +242,32 @@ object PersistenciaLocalRegistros {
             put("atualizadoEm", System.currentTimeMillis())
             put("itens", arr)
         }
-        escreverAtomico(context, FILE_FORMULARIO, root.toString())
+        val json = root.toString()
+        val cfg = carregarConfigColeta(context)
+        garantirDiretorioColetas(context)
+        escreverAtomico(context, arquivoColetaRelativo(cfg.coletaId, "formulario.json"), json)
+        escreverAtomico(context, FILE_FORMULARIO, json)
+        salvarMetaColetaArquivo(context, cfg)
     }
 
     fun limparFormulario(context: Context) {
+        val cfg = carregarConfigColeta(context)
         synchronized(fileLock) {
             try {
                 File(context.filesDir, FILE_FORMULARIO).delete()
                 File(context.filesDir, "$FILE_FORMULARIO.bak").delete()
+                val arqColeta = arquivoColetaRelativo(cfg.coletaId, "formulario.json")
+                File(context.filesDir, arqColeta).delete()
+                File(context.filesDir, "$arqColeta.bak").delete()
             } catch (_: Exception) {}
         }
     }
 
     fun carregarFormulario(context: Context): Pair<String, List<PontoFormulario>> {
-        val texto = lerAtomico(context, FILE_FORMULARIO)?.trim() ?: return "" to emptyList()
+        val cfg = carregarConfigColeta(context)
+        migrarLegadoSeNecessario(context, cfg.coletaId)
+        val texto = (lerAtomico(context, arquivoColetaRelativo(cfg.coletaId, "formulario.json"))
+            ?: lerAtomico(context, FILE_FORMULARIO))?.trim() ?: return "" to emptyList()
         if (texto.isBlank()) return "" to emptyList()
         return try {
             val root = JSONObject(texto)
@@ -317,6 +387,7 @@ object PersistenciaLocalRegistros {
     private const val KEY_LABELS = "labels_filtro"
     private const val KEY_USAR_MODELO_SECUNDARIO = "usar_modelo_secundario"
     private const val KEY_MODELO_SECUNDARIO_ARQUIVO = "modelo_secundario_arquivo"
+    private const val KEY_INCLUIR_PCT_CSV = "incluir_percentual_classes_csv"
 
     fun salvarConfiguracaoModelo(context: Context, config: ModelConfig) {
         try {
@@ -325,7 +396,7 @@ object PersistenciaLocalRegistros {
                 config.labelsFiltro.forEach { put(it) }
             }.toString()
 
-            prefs.edit()
+            val edit = prefs.edit()
                 .putString(KEY_MODELO_ARQUIVO, config.modeloSelecionado?.nomeArquivo)
                 .putString(KEY_MODELO_NOME, config.modeloSelecionado?.nomeExibicao)
                 .putString(KEY_INTERNO_PATH, config.modeloInternoPath)
@@ -336,9 +407,63 @@ object PersistenciaLocalRegistros {
                 .putString(KEY_LABELS, labelsJson)
                 .putBoolean(KEY_USAR_MODELO_SECUNDARIO, config.usarModeloSecundario)
                 .putString(KEY_MODELO_SECUNDARIO_ARQUIVO, config.modeloSecundarioArquivo)
-                .apply()
+                .putBoolean(KEY_INCLUIR_PCT_CSV, config.incluirPercentualClassesCsv)
+            if (!config.modeloInternoPath.isNullOrBlank() && config.modeloExternoNome.isNotBlank()) {
+                val nomeArq = File(config.modeloInternoPath).name
+                edit.putString("import_name_$nomeArq", config.modeloExternoNome.trim())
+            }
+            edit.apply()
         } catch (e: Exception) {
             Log.e("PersistenciaLocal", "Erro ao salvar configuracao do modelo: ${e.message}")
+        }
+    }
+
+    fun salvarNomeModeloImportado(context: Context, path: String, nomeExibicao: String) {
+        try {
+            val nomeArq = File(path).name
+            context.getSharedPreferences(PREFS_MODELO, Context.MODE_PRIVATE).edit()
+                .putString("import_name_$nomeArq", nomeExibicao.trim())
+                .apply()
+        } catch (_: Exception) {}
+    }
+
+    fun listarModelosImportados(context: Context): List<ModeloImportadoLocal> {
+        return try {
+            val dir = File(context.filesDir, DIR_MODELOS)
+            if (!dir.exists() || !dir.isDirectory) return emptyList()
+            val prefs = context.getSharedPreferences(PREFS_MODELO, Context.MODE_PRIVATE)
+            dir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".tflite", ignoreCase = true) && it.length() > 16L }
+                ?.map { arq ->
+                    val nomeSalvo = prefs.getString("import_name_${arq.name}", null)
+                    val nomeAmigavel = nomeSalvo?.takeIf { it.isNotBlank() }
+                        ?: arq.nameWithoutExtension.replace(Regex("_\\d{10,}$"), "")
+                    ModeloImportadoLocal(
+                        path = arq.absolutePath,
+                        nomeExibicao = nomeAmigavel,
+                        tamanhoBytes = arq.length(),
+                        modificadoEm = arq.lastModified()
+                    )
+                }
+                ?.sortedByDescending { it.modificadoEm }
+                ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun excluirModeloImportado(context: Context, path: String): Boolean {
+        return try {
+            val arq = File(path)
+            val deleted = arq.exists() && arq.delete()
+            if (deleted) {
+                context.getSharedPreferences(PREFS_MODELO, Context.MODE_PRIVATE).edit()
+                    .remove("import_name_${arq.name}")
+                    .apply()
+            }
+            deleted
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -386,6 +511,12 @@ object PersistenciaLocalRegistros {
             val modeloSecundarioArquivo = prefs.getString(KEY_MODELO_SECUNDARIO_ARQUIVO, "detector_doenca.tflite")
                 ?.takeIf { it.isNotBlank() }
                 ?: "detector_doenca.tflite"
+            val incluirPctCsv = prefs.getBoolean(KEY_INCLUIR_PCT_CSV, false)
+            val thresholdCalibrado = if (!usaCustom && threshold == 0.30f && modeloEmbutido != null && modeloEmbutido.thresholdSugerido < 0.30f) {
+                modeloEmbutido.thresholdSugerido
+            } else {
+                threshold
+            }
 
             ModelConfig(
                 modeloSelecionado = modeloEmbutido,
@@ -393,10 +524,11 @@ object PersistenciaLocalRegistros {
                 modeloExternoUri = externoUri,
                 modeloExternoNome = externoNome,
                 labelsFiltro = labelsEfetivas,
-                threshold = threshold,
-                maxResultados = maxResultados,
+                threshold = thresholdCalibrado,
+                maxResultados = maxResultados.coerceIn(1, 300),
                 usarModeloSecundario = usarModeloSecundario,
-                modeloSecundarioArquivo = modeloSecundarioArquivo
+                modeloSecundarioArquivo = modeloSecundarioArquivo,
+                incluirPercentualClassesCsv = incluirPctCsv
             )
         } catch (e: Exception) {
             Log.e("PersistenciaLocal", "Erro ao carregar configuracao do modelo: ${e.message}")
@@ -407,34 +539,49 @@ object PersistenciaLocalRegistros {
     private const val PREFS_COLETA = "breedai_coleta_prefs"
 
     data class ConfigColetaLocal(
-        val coletaNome: String = "Coleta_Campo_01",
+        val coletaNome: String = "Coleta Campo 01",
         val labelTratamento: String = "Tratamento",
         val labelParcela: String = "Parcela",
         val labelPlanta: String = "Planta",
         val tipoNumParcela: Boolean = true,
         val tipoNumPlanta: Boolean = true,
-        val autoAvancarPlanta: Boolean = true
+        val autoAvancarPlanta: Boolean = true,
+        val coletaId: String = "coleta_padrao",
+        val templateId: String = "fruticultura"
     )
 
     fun salvarConfigColeta(context: Context, cfg: ConfigColetaLocal) {
         try {
+            val idLimpo = safeColetaId(cfg.coletaId)
+            val normalizada = cfg.copy(coletaId = idLimpo)
             context.getSharedPreferences(PREFS_COLETA, Context.MODE_PRIVATE).edit()
-                .putString("coleta_nome", cfg.coletaNome)
-                .putString("label_tratamento", cfg.labelTratamento)
-                .putString("label_parcela", cfg.labelParcela)
-                .putString("label_planta", cfg.labelPlanta)
-                .putBoolean("num_parcela", cfg.tipoNumParcela)
-                .putBoolean("num_planta", cfg.tipoNumPlanta)
-                .putBoolean("auto_avancar_planta", cfg.autoAvancarPlanta)
+                .putString("coleta_id", normalizada.coletaId)
+                .putString("template_id", normalizada.templateId)
+                .putString("coleta_nome", normalizada.coletaNome)
+                .putString("label_tratamento", normalizada.labelTratamento)
+                .putString("label_parcela", normalizada.labelParcela)
+                .putString("label_planta", normalizada.labelPlanta)
+                .putBoolean("num_parcela", normalizada.tipoNumParcela)
+                .putBoolean("num_planta", normalizada.tipoNumPlanta)
+                .putBoolean("auto_avancar_planta", normalizada.autoAvancarPlanta)
                 .apply()
+            salvarMetaColetaArquivo(context, normalizada)
         } catch (_: Exception) {}
     }
 
     fun carregarConfigColeta(context: Context): ConfigColetaLocal {
         return try {
             val prefs = context.getSharedPreferences(PREFS_COLETA, Context.MODE_PRIVATE)
+            val nomeBruto = prefs.getString("coleta_nome", "Coleta Campo 01") ?: "Coleta Campo 01"
+            val nomeLimpo = if (nomeBruto == "Coleta_Campo_01" || nomeBruto.isBlank()) {
+                "Coleta Campo 01"
+            } else {
+                nomeBruto
+            }
             ConfigColetaLocal(
-                coletaNome = prefs.getString("coleta_nome", "Coleta_Campo_01") ?: "Coleta_Campo_01",
+                coletaId = safeColetaId(prefs.getString("coleta_id", "coleta_padrao") ?: "coleta_padrao"),
+                templateId = prefs.getString("template_id", "fruticultura") ?: "fruticultura",
+                coletaNome = nomeLimpo,
                 labelTratamento = prefs.getString("label_tratamento", "Tratamento") ?: "Tratamento",
                 labelParcela = prefs.getString("label_parcela", "Parcela") ?: "Parcela",
                 labelPlanta = prefs.getString("label_planta", "Planta") ?: "Planta",
@@ -444,6 +591,174 @@ object PersistenciaLocalRegistros {
             )
         } catch (_: Exception) {
             ConfigColetaLocal()
+        }
+    }
+
+    private fun salvarMetaColetaArquivo(context: Context, cfg: ConfigColetaLocal) {
+        try {
+            garantirDiretorioColetas(context)
+            val obj = JSONObject().apply {
+                put("coletaId", safeColetaId(cfg.coletaId))
+                put("coletaNome", cfg.coletaNome)
+                put("templateId", cfg.templateId)
+                put("labelTratamento", cfg.labelTratamento)
+                put("labelParcela", cfg.labelParcela)
+                put("labelPlanta", cfg.labelPlanta)
+                put("tipoNumParcela", cfg.tipoNumParcela)
+                put("tipoNumPlanta", cfg.tipoNumPlanta)
+                put("autoAvancarPlanta", cfg.autoAvancarPlanta)
+                put("atualizadoEm", System.currentTimeMillis())
+            }
+            escreverAtomico(context, arquivoColetaRelativo(cfg.coletaId, "meta.json"), obj.toString())
+        } catch (_: Exception) {}
+    }
+
+    private fun lerMetaColetaArquivo(context: Context, coletaId: String): Pair<ConfigColetaLocal, Long>? {
+        val raw = lerAtomico(context, arquivoColetaRelativo(coletaId, "meta.json")) ?: return null
+        return try {
+            val o = JSONObject(raw)
+            val cfg = ConfigColetaLocal(
+                coletaId = safeColetaId(o.optString("coletaId", coletaId)),
+                templateId = o.optString("templateId", "fruticultura").ifBlank { "fruticultura" },
+                coletaNome = o.optString("coletaNome", "Coleta").ifBlank { "Coleta" },
+                labelTratamento = o.optString("labelTratamento", "Tratamento").ifBlank { "Tratamento" },
+                labelParcela = o.optString("labelParcela", "Parcela").ifBlank { "Parcela" },
+                labelPlanta = o.optString("labelPlanta", "Planta").ifBlank { "Planta" },
+                tipoNumParcela = o.optBoolean("tipoNumParcela", true),
+                tipoNumPlanta = o.optBoolean("tipoNumPlanta", true),
+                autoAvancarPlanta = o.optBoolean("autoAvancarPlanta", true)
+            )
+            cfg to o.optLong("atualizadoEm", System.currentTimeMillis())
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun listarColetasSalvas(context: Context): List<ResumoColetaSalva> {
+        val ativa = carregarConfigColeta(context)
+        migrarLegadoSeNecessario(context, ativa.coletaId)
+        salvarMetaColetaArquivo(context, ativa)
+
+        val dir = File(context.filesDir, DIR_COLETAS)
+        if (!dir.exists() || !dir.isDirectory) return emptyList()
+
+        val ids = dir.listFiles()
+            ?.mapNotNull { f ->
+                when {
+                    f.name.endsWith("_meta.json") -> f.name.removeSuffix("_meta.json")
+                    f.name.endsWith("_registros.json") -> f.name.removeSuffix("_registros.json")
+                    else -> null
+                }
+            }
+            ?.distinct()
+            .orEmpty()
+
+        return ids.mapNotNull { id ->
+            val metaPar = lerMetaColetaArquivo(context, id)
+            val cfg = metaPar?.first ?: (if (id == ativa.coletaId) ativa else null) ?: return@mapNotNull null
+            val regs = lerAtomico(context, arquivoColetaRelativo(id, "registros.json"))?.let {
+                runCatching { JSONArray(it).length() }.getOrDefault(0)
+            } ?: 0
+            val pontos = lerAtomico(context, arquivoColetaRelativo(id, "formulario.json"))?.let {
+                runCatching { JSONObject(it).optJSONArray("itens")?.length() ?: 0 }.getOrDefault(0)
+            } ?: 0
+            val ts = metaPar?.second ?: File(dir, "${id}_meta.json").lastModified()
+            ResumoColetaSalva(
+                id = id,
+                nome = cfg.coletaNome,
+                templateId = cfg.templateId,
+                totalRegistros = regs,
+                totalPontosRota = pontos,
+                atualizadoEm = ts
+            )
+        }.sortedByDescending { it.atualizadoEm }
+    }
+
+    fun criarNovaColetaIsolada(
+        context: Context,
+        nome: String,
+        templateId: String,
+        manterPlanilhaAtual: Boolean
+    ): ConfigColetaLocal {
+        val atual = carregarConfigColeta(context)
+        migrarLegadoSeNecessario(context, atual.coletaId)
+        salvarMetaColetaArquivo(context, atual)
+
+        val formAtual = if (manterPlanilhaAtual) carregarFormulario(context).second else emptyList()
+        var novoId = "col_${System.currentTimeMillis()}"
+        garantirDiretorioColetas(context)
+        while (File(context.filesDir, arquivoColetaRelativo(novoId, "meta.json")).exists()) {
+            novoId = "col_${System.currentTimeMillis()}_${(10..99).random()}"
+        }
+
+        val novaCfg = atual.copy(
+            coletaId = novoId,
+            templateId = templateId.ifBlank { "fruticultura" },
+            coletaNome = nome.trim().ifBlank { "Coleta 01" }
+        )
+        salvarConfigColeta(context, novaCfg)
+        escreverAtomico(context, arquivoColetaRelativo(novoId, "registros.json"), "[]")
+        escreverAtomico(context, FILE_REGISTROS, "[]")
+
+        if (manterPlanilhaAtual && formAtual.isNotEmpty()) {
+            val pontosLimpos = formAtual.map { it.copy(coletado = false, resumoResultado = "") }
+            salvarFormulario(context, pontosLimpos, novaCfg.coletaNome)
+        } else {
+            limparFormulario(context)
+        }
+        return novaCfg
+    }
+
+    fun alternarColetaAtiva(context: Context, coletaId: String): ConfigColetaLocal? {
+        val atual = carregarConfigColeta(context)
+        salvarMetaColetaArquivo(context, atual)
+
+        val idLimpo = safeColetaId(coletaId)
+        val meta = lerMetaColetaArquivo(context, idLimpo)?.first ?: return null
+        salvarConfigColeta(context, meta)
+
+        val regJson = lerAtomico(context, arquivoColetaRelativo(idLimpo, "registros.json")) ?: "[]"
+        escreverAtomico(context, FILE_REGISTROS, regJson)
+
+        val formJson = lerAtomico(context, arquivoColetaRelativo(idLimpo, "formulario.json"))
+        if (formJson != null) {
+            escreverAtomico(context, FILE_FORMULARIO, formJson)
+        } else {
+            synchronized(fileLock) {
+                try {
+                    File(context.filesDir, FILE_FORMULARIO).delete()
+                    File(context.filesDir, "$FILE_FORMULARIO.bak").delete()
+                } catch (_: Exception) {}
+            }
+        }
+        return meta
+    }
+
+    fun excluirColetaSalva(context: Context, coletaId: String) {
+        val idLimpo = safeColetaId(coletaId)
+        val ativa = carregarConfigColeta(context)
+        synchronized(fileLock) {
+            listOf("registros.json", "formulario.json", "meta.json").forEach { sufixo ->
+                val rel = arquivoColetaRelativo(idLimpo, sufixo)
+                try {
+                    File(context.filesDir, rel).delete()
+                    File(context.filesDir, "$rel.bak").delete()
+                } catch (_: Exception) {}
+            }
+        }
+        if (ativa.coletaId == idLimpo) {
+            val restantes = listarColetasSalvas(context)
+            val proximo = restantes.firstOrNull()
+            if (proximo != null) {
+                alternarColetaAtiva(context, proximo.id)
+            } else {
+                criarNovaColetaIsolada(
+                    context = context,
+                    nome = "Coleta Campo 01",
+                    templateId = "fruticultura",
+                    manterPlanilhaAtual = false
+                )
+            }
         }
     }
 

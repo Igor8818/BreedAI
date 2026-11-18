@@ -296,4 +296,150 @@ class YoloDetectionAndScaleUnitTest {
         assertEquals(0.61f, candidates[0][8], 0.001f)
         assertEquals(0.18f, candidates[0][9], 0.001f)
     }
+
+    @Test
+    fun `testDecodeYoloV5WithObjectness_SingleClassDoesNotCreateGhostClass`() {
+        val out = arrayOf(
+            floatArrayOf(0.5f, 0.5f, 0.3f, 0.4f, 0.90f, 0.80f)
+        )
+        val candidates = com.example.myapplication.userinterface.util.ObjectDetectorHelper.decodeYoloRawCandidates(
+            out = out,
+            numAnchors = 1,
+            numClasses = 1,
+            transposed = false,
+            inputWidth = 640,
+            inputHeight = 640,
+            scoreThreshold = 0.25f,
+            hasObjectness = true
+        )
+
+        assertEquals(1, candidates.size)
+        assertEquals(0f, candidates[0][5], 0.001f)
+        assertEquals(0.72f, candidates[0][4], 0.001f)
+
+        val lowObjOut = arrayOf(
+            floatArrayOf(0.5f, 0.5f, 0.3f, 0.4f, 0.10f, 0.95f)
+        )
+        val lowObjCandidates = com.example.myapplication.userinterface.util.ObjectDetectorHelper.decodeYoloRawCandidates(
+            out = lowObjOut,
+            numAnchors = 1,
+            numClasses = 1,
+            transposed = false,
+            inputWidth = 640,
+            inputHeight = 640,
+            scoreThreshold = 0.25f,
+            hasObjectness = true
+        )
+        assertTrue(lowObjCandidates.isEmpty())
+    }
+
+    @Test
+    fun `testParseLabelsDeTextoOuYaml_SupportsRoboflowYamlAndTxt`() {
+        val roboflowYaml = """
+            train: ../train/images
+            val: ../valid/images
+            nc: 3
+            names: ['Ferrugem', 'Cercospora', 'Sadio']
+        """.trimIndent()
+        assertEquals(
+            listOf("Ferrugem", "Cercospora", "Sadio"),
+            com.example.myapplication.userinterface.util.ObjectDetectorHelper.parseLabelsDeTextoOuYaml(
+                roboflowYaml,
+                "data.yaml"
+            )
+        )
+
+        val ultralyticsYaml = """
+            names:
+              0: Sadio
+              1: Vassoura
+              2: Podridao
+        """.trimIndent()
+        assertEquals(
+            listOf("Sadio", "Vassoura", "Podridao"),
+            com.example.myapplication.userinterface.util.ObjectDetectorHelper.parseLabelsDeTextoOuYaml(
+                ultralyticsYaml,
+                "metadata.yaml"
+            )
+        )
+
+        val txt = "# classes\nEspiga\nFolha\n"
+        assertEquals(
+            listOf("Espiga", "Folha"),
+            com.example.myapplication.userinterface.util.ObjectDetectorHelper.parseLabelsDeTextoOuYaml(
+                txt,
+                "classes.txt"
+            )
+        )
+    }
+
+    @Test
+    fun `testMultiAnchor64Sampling_DetectsLogitsWhenCornersAreZero`() {
+        val out = Array(100) { FloatArray(5) }
+        out[20] = floatArrayOf(0.1f, 0.1f, 0.1f, 0.1f, -4.0f)
+        out[37] = floatArrayOf(0.5f, 0.5f, 0.2f, 0.2f, 3.0f)
+
+        val candidates = com.example.myapplication.userinterface.util.ObjectDetectorHelper.decodeYoloRawCandidates(
+            out = out,
+            numAnchors = 100,
+            numClasses = 1,
+            transposed = false,
+            inputWidth = 640,
+            inputHeight = 640,
+            scoreThreshold = 0.25f,
+            hasObjectness = false
+        )
+
+        assertEquals(1, candidates.size)
+        assertEquals(0.95257f, candidates[0][4], 0.002f)
+    }
+
+    @Test
+    fun `testIsTwoOutputBoxAndScoresDetector_DistinguishesEfficientDetFromYoloSeg`() {
+        assertTrue(
+            com.example.myapplication.userinterface.util.ObjectDetectorHelper.isTwoOutputBoxAndScoresDetector(
+                intArrayOf(1, 19206, 90),
+                intArrayOf(1, 19206, 4)
+            )
+        )
+        assertFalse(
+            com.example.myapplication.userinterface.util.ObjectDetectorHelper.isTwoOutputBoxAndScoresDetector(
+                intArrayOf(1, 37, 8400),
+                intArrayOf(1, 160, 160, 32)
+            )
+        )
+    }
+
+    @Test
+    fun `testDecodeEfficientDetTwoOutputs_Generates19206AnchorsAndDecodesBananaAndApple`() {
+        val anchors = com.example.myapplication.userinterface.util.ObjectDetectorHelper
+            .generateEfficientDetAnchors(320, 320)
+        assertEquals(19206, anchors.size)
+        assertEquals(0.075f, anchors[0][0], 0.0002f)
+        assertEquals(0.075f, anchors[0][1], 0.0002f)
+        assertEquals(0.0125f, anchors[0][2], 0.0002f)
+        assertEquals(0.0125f, anchors[0][3], 0.0002f)
+
+        val scores = Array(19206) { FloatArray(90) { -10f } }
+        val boxes = Array(19206) { FloatArray(4) { 0f } }
+        // Isca de classe não permitida ("person" = 0) com confiança mais alta
+        scores[100][0] = 4.0f
+        // Classe alvo "banana" = 51 na âncora interior 7380 (y=20, x=20 no nível 3)
+        scores[7380][51] = 2.5f
+
+        val decoded = com.example.myapplication.userinterface.util.ObjectDetectorHelper
+            .decodeEfficientDetTwoOutputs(
+                scores = scores,
+                boxes = boxes,
+                anchors = anchors,
+                numClasses = 90,
+                scoreThreshold = 0.20f,
+                allowedClassIndices = setOf(51)
+            )
+
+        assertEquals(1, decoded.size)
+        assertEquals(51f, decoded[0][5], 0.001f)
+        assertEquals(anchors[7380][3], decoded[0][0], 0.002f)
+        assertEquals(anchors[7380][2], decoded[0][1], 0.002f)
+    }
 }

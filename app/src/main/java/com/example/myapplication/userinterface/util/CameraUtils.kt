@@ -18,7 +18,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -39,6 +44,10 @@ private val inferenceExecutor = Executors.newSingleThreadExecutor()
 fun CameraWithAI(
     helper: ObjectDetectorHelper,
     capture: ImageCapture,
+    lanternaAtiva: Boolean = false,
+    zoomRatio: Float = 1f,
+    onSuportaLanterna: (Boolean) -> Unit = {},
+    onTapFocus: (Float, Float) -> Unit = { _, _ -> },
     onResultsUpdated: (ObjectDetectorHelper.ResultadoDeteccao) -> Unit
 ) {
     val context = LocalContext.current
@@ -48,6 +57,23 @@ fun CameraWithAI(
     val disposed = remember { AtomicBoolean(false) }
     val inferenceRunning = remember { AtomicBoolean(false) }
     val lastFinishedMs = remember { AtomicLong(0L) }
+    var cameraRef by remember { mutableStateOf<Camera?>(null) }
+    var zoomMaxRef by remember { mutableFloatStateOf(4f) }
+
+    LaunchedEffect(cameraRef, lanternaAtiva) {
+        try {
+            if (cameraRef?.cameraInfo?.hasFlashUnit() == true) {
+                cameraRef?.cameraControl?.enableTorch(lanternaAtiva)
+            }
+        } catch (_: Exception) {}
+    }
+
+    LaunchedEffect(cameraRef, zoomRatio) {
+        try {
+            val zMax = cameraRef?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: zoomMaxRef
+            cameraRef?.cameraControl?.setZoomRatio(zoomRatio.coerceIn(1f, zMax.coerceAtLeast(1f)))
+        } catch (_: Exception) {}
+    }
 
     // Registra listener thread-safe direcionado à MainLooper e desvincula a câmera ao sair da tela
     DisposableEffect(helper, lifecycleOwner) {
@@ -71,6 +97,10 @@ fun CameraWithAI(
         onDispose {
             disposed.set(true)
             try {
+                cameraRef?.cameraControl?.enableTorch(false)
+            } catch (_: Exception) {}
+            cameraRef = null
+            try {
                 if (providerFuture.isDone) {
                     providerFuture.get().unbindAll()
                 }
@@ -84,6 +114,18 @@ fun CameraWithAI(
             // Garante que o preview use FILL_CENTER mantendo proporção da imagem
             scaleType = PreviewView.ScaleType.FILL_CENTER
             implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+            setOnTouchListener { v, event ->
+                if (event.action == android.view.MotionEvent.ACTION_UP) {
+                    try {
+                        val point = meteringPointFactory.createPoint(event.x, event.y)
+                        val action = FocusMeteringAction.Builder(point).build()
+                        cameraRef?.cameraControl?.startFocusAndMetering(action)
+                    } catch (_: Exception) {}
+                    onTapFocus(event.x, event.y)
+                    v.performClick()
+                }
+                true
+            }
         }
 
         val minCooldownMs = 140L
@@ -151,11 +193,21 @@ fun CameraWithAI(
                 }
 
             provider.unbindAll()
-            provider.bindToLifecycle(
+            val cam = provider.bindToLifecycle(
                 lifecycleOwner,
                 CameraSelector.DEFAULT_BACK_CAMERA,
                 preview, capture, analyzer
             )
+            cameraRef = cam
+            zoomMaxRef = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 4f
+            val temLanterna = cam.cameraInfo.hasFlashUnit()
+            onSuportaLanterna(temLanterna)
+            if (lanternaAtiva && temLanterna) {
+                try { cam.cameraControl.enableTorch(true) } catch (_: Exception) {}
+            }
+            if (zoomRatio > 1f) {
+                try { cam.cameraControl.setZoomRatio(zoomRatio.coerceIn(1f, zoomMaxRef)) } catch (_: Exception) {}
+            }
         }, mainExecutor)
         view
     }, modifier = Modifier.fillMaxSize())
@@ -260,7 +312,13 @@ fun BoundingBoxOverlay(
     }
 }
 
-fun tirarFoto(context: Context, capture: ImageCapture, id: String, onSucesso: (Uri) -> Unit) {
+fun tirarFoto(
+    context: Context,
+    capture: ImageCapture,
+    id: String,
+    onErro: (String) -> Unit = {},
+    onSucesso: (Uri) -> Unit
+) {
     val name = "${id}_${System.currentTimeMillis()}.jpg"
     val values = ContentValues().apply {
         put(MediaStore.MediaColumns.DISPLAY_NAME, name)
@@ -278,10 +336,16 @@ fun tirarFoto(context: Context, capture: ImageCapture, id: String, onSucesso: (U
     capture.takePicture(outputOptions, ContextCompat.getMainExecutor(context),
         object : ImageCapture.OnImageSavedCallback {
             override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                output.savedUri?.let { onSucesso(it) }
+                val uri = output.savedUri
+                if (uri != null) {
+                    onSucesso(uri)
+                } else {
+                    onErro("Não foi possível obter a foto salva.")
+                }
             }
             override fun onError(exc: ImageCaptureException) {
                 Log.e("Camera", "Erro ao capturar: ${exc.message}")
+                onErro(exc.message ?: "Falha ao capturar imagem.")
             }
         }
     )

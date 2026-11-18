@@ -4,8 +4,11 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.AspectRatio
+import androidx.camera.core.ImageCapture
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,6 +34,7 @@ import com.example.myapplication.data.ModelConfig
 import com.example.myapplication.data.ModelEmbutido
 import com.example.myapplication.userinterface.util.ImportadorPlanilhaUniversal
 import com.example.myapplication.userinterface.util.ObjectDetectorHelper
+import com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
 import com.example.myapplication.userinterface.util.compartilharArquivoViaAndroid
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -48,7 +52,8 @@ import java.util.zip.ZipOutputStream
 fun TelaConfiguracaoModelo(
     configAtual: ModelConfig,
     onSalvar: (ModelConfig) -> Unit,
-    onGerarVariaveisDoModelo: ((List<String>) -> Unit)? = null
+    onGerarVariaveisDoModelo: ((List<String>) -> Unit)? = null,
+    onModoImersivoChange: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -63,6 +68,7 @@ fun TelaConfiguracaoModelo(
     var thresholdTexto by remember(configAtual) { mutableStateOf((configAtual.threshold * 100).toInt().toString()) }
     var maxResultados by remember(configAtual) { mutableIntStateOf(configAtual.maxResultados) }
     var usarModeloSecundario by remember(configAtual) { mutableStateOf(configAtual.usarModeloSecundario) }
+    var incluirPercentualClassesCsv by remember(configAtual) { mutableStateOf(configAtual.incluirPercentualClassesCsv) }
     var novoLabel by remember { mutableStateOf("") }
     var buscaClasseModelo by remember { mutableStateOf("") }
     var novaClassificacaoTexto by remember { mutableStateOf("") }
@@ -70,7 +76,39 @@ fun TelaConfiguracaoModelo(
     var classesDisponiveisNoModelo by remember { mutableStateOf<List<String>>(emptyList()) }
     var classificacoesPersonalizadas by remember { mutableStateOf<List<String>>(emptyList()) }
     var diagnosticoModelo by remember { mutableStateOf<ObjectDetectorHelper.ModelInspectionReport?>(null) }
+    var modelosImportados by remember { mutableStateOf<List<PersistenciaLocalRegistros.ModeloImportadoLocal>>(emptyList()) }
+    var mostrarCacauAvancado by remember { mutableStateOf(false) }
+    var testandoNaCamera by remember { mutableStateOf(false) }
     var erroImportacaoDialog by remember { mutableStateOf<String?>(null) }
+    var infoDialogTitulo by remember { mutableStateOf<String?>(null) }
+    var infoDialogTexto by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        modelosImportados = withContext(Dispatchers.IO) {
+            PersistenciaLocalRegistros.listarModelosImportados(context)
+        }
+    }
+
+    LaunchedEffect(testandoNaCamera) {
+        onModoImersivoChange(testandoNaCamera)
+    }
+    DisposableEffect(Unit) {
+        onDispose { onModoImersivoChange(false) }
+    }
+
+    if (infoDialogTitulo != null) {
+        AlertDialog(
+            onDismissRequest = { infoDialogTitulo = null },
+            title = { Text(infoDialogTitulo!!, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            text = { Text(infoDialogTexto, fontSize = 13.sp, lineHeight = 19.sp) },
+            confirmButton = {
+                Button(
+                    onClick = { infoDialogTitulo = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = verde)
+                ) { Text("Entendi") }
+            }
+        )
+    }
 
     val listaLabels = remember(labelsTexto) {
         labelsTexto.split(",").map { it.trim() }.filter { it.isNotBlank() }
@@ -85,7 +123,7 @@ fun TelaConfiguracaoModelo(
         ).chaveModeloPersistente()
     }
 
-    LaunchedEffect(modeloSelecionado, modeloInternoPath, chaveModeloAtual) {
+    LaunchedEffect(modeloSelecionado, modeloInternoPath) {
         withContext(Dispatchers.IO) {
             val inspecao = when {
                 !modeloInternoPath.isNullOrBlank() -> {
@@ -101,12 +139,12 @@ fun TelaConfiguracaoModelo(
             }
             val labelsValidas = (inspecao?.labelsExtraidas ?: emptyList())
                 .filter { it.isNotBlank() && it != "???" }
-            val salvasClassif = com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
+            val salvasClassif = PersistenciaLocalRegistros
                 .carregarClassificacoesModelo(context, chaveModeloAtual)
             withContext(Dispatchers.Main) {
                 diagnosticoModelo = inspecao
-                classesDisponiveisNoModelo = labelsValidas
-                classificacoesPersonalizadas = salvasClassif ?: if (labelsValidas.size in 2..15) {
+                classesDisponiveisNoModelo = if (labelsValidas.isNotEmpty()) labelsValidas else (salvasClassif ?: emptyList())
+                classificacoesPersonalizadas = salvasClassif ?: if (labelsValidas.size in 2..30) {
                     labelsValidas
                 } else {
                     modeloSelecionado?.labelsDefault ?: listaLabels
@@ -124,7 +162,7 @@ fun TelaConfiguracaoModelo(
                 Button(
                     onClick = { erroImportacaoDialog = null },
                     colors = ButtonDefaults.buttonColors(containerColor = verde)
-                ) { Text("ENTENDI") }
+                ) { Text("Entendi") }
             }
         )
     }
@@ -134,22 +172,39 @@ fun TelaConfiguracaoModelo(
         processandoArquivo = true
         coroutineScope.launch(Dispatchers.IO) {
             val importado = importarArquivoModeloPermanente(context, uri)
+            if (importado.compativel && !importado.tflitePath.isNullOrBlank()) {
+                PersistenciaLocalRegistros.salvarNomeModeloImportado(
+                    context, importado.tflitePath, importado.nomeExibicao
+                )
+                val labelsParaSalvar = importado.labels.filter { it != "???" && it.isNotBlank() }
+                if (labelsParaSalvar.size in 1..30) {
+                    val chaveNova = ModelConfig(
+                        modeloInternoPath = importado.tflitePath,
+                        modeloExternoNome = importado.nomeExibicao
+                    ).chaveModeloPersistente()
+                    PersistenciaLocalRegistros.salvarClassificacoesModelo(context, chaveNova, labelsParaSalvar)
+                }
+            }
+            val atualizados = PersistenciaLocalRegistros.listarModelosImportados(context)
             withContext(Dispatchers.Main) {
                 processandoArquivo = false
+                modelosImportados = atualizados
                 if (importado.compativel && !importado.tflitePath.isNullOrBlank()) {
                     modeloSelecionado = null
                     modeloExternoUri = null
                     modeloInternoPath = importado.tflitePath
                     modeloExternoNome = importado.nomeExibicao
-                    classesDisponiveisNoModelo = importado.labels.filter { it != "???" && it.isNotBlank() }
+                    val labelsLimpas = importado.labels.filter { it != "???" && it.isNotBlank() }
+                    classesDisponiveisNoModelo = labelsLimpas
                     diagnosticoModelo = importado.inspecao
-                    val labelsLimpas = classesDisponiveisNoModelo
-                    if (labelsLimpas.isNotEmpty()) {
-                        labelsTexto = labelsLimpas.take(12).joinToString(", ")
+                    labelsTexto = when {
+                        labelsLimpas.isEmpty() -> ""
+                        labelsLimpas.size <= 30 -> labelsLimpas.joinToString(", ")
+                        else -> ""
                     }
                     importado.threshold?.let { thresholdTexto = (it * 100).toInt().toString() }
-                    importado.maxResultados?.let { maxResultados = it }
-                    importado.usarModeloSecundario?.let { usarModeloSecundario = it }
+                    importado.maxResultados?.let { maxResultados = it.coerceIn(1, 300) }
+                    usarModeloSecundario = importado.usarModeloSecundario ?: false
                     Toast.makeText(
                         context,
                         importado.inspecao?.avisoUsuario ?: "Modelo \"${importado.nomeExibicao}\" importado!",
@@ -164,6 +219,35 @@ fun TelaConfiguracaoModelo(
         }
     }
 
+    val launcherLabelsAvulso = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        coroutineScope.launch(Dispatchers.IO) {
+            val bytes = lerBytesComLimite(context, uri, 1024 * 1024)
+            val nomeArq = obterNomeArquivo(context, uri)
+            val labelsLidas = if (bytes != null && bytes.isNotEmpty()) {
+                ObjectDetectorHelper.parseLabelsDeTextoOuYaml(
+                    bytes.toString(Charsets.UTF_8),
+                    nomeArq
+                ).filter { it != "???" && it.isNotBlank() }
+            } else {
+                emptyList()
+            }
+            withContext(Dispatchers.Main) {
+                if (labelsLidas.isEmpty()) {
+                    Toast.makeText(context, "Nenhuma classe encontrada no arquivo selecionado.", Toast.LENGTH_LONG).show()
+                } else {
+                    classesDisponiveisNoModelo = labelsLidas
+                    labelsTexto = if (labelsLidas.size <= 30) labelsLidas.joinToString(", ") else ""
+                    if (labelsLidas.size in 2..30) {
+                        classificacoesPersonalizadas = labelsLidas
+                        PersistenciaLocalRegistros.salvarClassificacoesModelo(context, chaveModeloAtual, labelsLidas)
+                    }
+                    Toast.makeText(context, "${labelsLidas.size} classe(s) carregadas de $nomeArq!", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     val threshold = (thresholdTexto.toIntOrNull() ?: 30).coerceIn(10, 95) / 100f
     val configMontada = ModelConfig(
         modeloSelecionado = modeloSelecionado,
@@ -172,11 +256,50 @@ fun TelaConfiguracaoModelo(
         modeloExternoNome = modeloExternoNome.trim(),
         labelsFiltro = listaLabels,
         threshold = threshold,
-        maxResultados = maxResultados,
+        maxResultados = maxResultados.coerceIn(1, 300),
         usarModeloSecundario = usarModeloSecundario,
-        modeloSecundarioArquivo = configAtual.modeloSecundarioArquivo
+        modeloSecundarioArquivo = configAtual.modeloSecundarioArquivo,
+        incluirPercentualClassesCsv = incluirPercentualClassesCsv
     )
     val podeSalvar = modeloSelecionado != null || !modeloInternoPath.isNullOrBlank() || modeloExternoUri != null
+
+    if (testandoNaCamera && podeSalvar) {
+        BackHandler { testandoNaCamera = false }
+        val imageCaptureTeste = remember {
+            ImageCapture.Builder()
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .build()
+        }
+        val helperTeste = remember(
+            configMontada.modeloSelecionado,
+            configMontada.modeloInternoPath,
+            configMontada.modeloExternoUri,
+            configMontada.labelsFiltro,
+            configMontada.maxResultados
+        ) {
+            criarDetectorHelperBreedAI(context, configMontada)
+        }
+        DisposableEffect(helperTeste) {
+            onDispose { helperTeste.fechar() }
+        }
+
+        CameraFullscreenBreedAI(
+            context = context,
+            detectorHelper = helperTeste,
+            imageCapture = imageCaptureTeste,
+            modelConfig = configMontada,
+            tituloHud = "Teste: ${configMontada.nomeExibicao}",
+            idParaArquivo = "TESTE",
+            modoSemFrutos = false,
+            modoTesteRapido = true,
+            onThresholdChange = { novo ->
+                thresholdTexto = (novo * 100).toInt().coerceIn(10, 95).toString()
+            },
+            onCancelar = { testandoNaCamera = false },
+            onFotoCapturada = { _, _, _, _ -> testandoNaCamera = false }
+        )
+        return
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -212,14 +335,14 @@ fun TelaConfiguracaoModelo(
                             }
                         },
                         enabled = podeSalvar && !processandoArquivo,
-                        modifier = Modifier.weight(1f).height(50.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 52.dp),
                         shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = verde)
                     ) {
-                        Icon(Icons.Default.Share, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("EXPORTAR .ZIP", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                        Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Exportar pacote", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
                     }
                     Button(
                         onClick = {
@@ -230,14 +353,14 @@ fun TelaConfiguracaoModelo(
                             onSalvar(configMontada)
                         },
                         enabled = podeSalvar && !processandoArquivo,
-                        modifier = Modifier.weight(1.25f).height(50.dp),
+                        modifier = Modifier.weight(1.25f).heightIn(min = 52.dp),
                         shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = verde)
                     ) {
                         Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("APLICAR MODELO", fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+                        Text("Aplicar modelo", fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
                     }
                 }
             }
@@ -251,33 +374,53 @@ fun TelaConfiguracaoModelo(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(vertical = 14.dp)
         ) {
-            // ── ORIENTAÇÃO RÁPIDA AO USUÁRIO ──
+            // ── TESTE RÁPIDO NA CÂMERA ──
             item {
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = RoundedCornerShape(14.dp),
                     color = Color(0xFFE8F5E9),
-                    border = BorderStroke(1.dp, Color(0xFFC8E6C9)),
+                    border = BorderStroke(1.dp, Color(0xFFA5D6A7)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(Icons.Default.AutoAwesome, null, tint = verde, modifier = Modifier.size(18.dp))
-                        Text(
-                            "Escolha abaixo o que a câmera deve reconhecer e contar. Tudo funciona 100% no celular, sem internet.",
-                            fontSize = 12.sp,
-                            color = Color(0xFF1B5E20),
-                            lineHeight = 16.sp
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                configMontada.nomeExibicao,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = Color(0xFF1B5E20)
+                            )
+                            Text(
+                                "Teste o modelo ao vivo e calibre a confiança na câmera",
+                                fontSize = 11.sp,
+                                color = Color(0xFF4E6E52)
+                            )
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            onClick = { testandoNaCamera = true },
+                            enabled = podeSalvar && !processandoArquivo,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = verde),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("Testar", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
 
-            // ── SEÇÃO 1: ESCOLHER O QUE A IA VAI IDENTIFICAR ──
+            // ── SEÇÃO 1: MODELO DE DETECÇÃO ──
             item {
-                SectionHeader(icon = Icons.Default.Memory, title = "1. O que a câmera vai identificar?")
+                SectionHeader(icon = Icons.Default.Memory, title = "O que a câmera identifica")
             }
 
             items(MODELOS_EMBUTIDOS) { modelo ->
@@ -294,6 +437,8 @@ fun TelaConfiguracaoModelo(
                         modeloExternoUri = null
                         modeloExternoNome = ""
                         labelsTexto = modelo.labelsDefault.joinToString(", ")
+                        thresholdTexto = (modelo.thresholdSugerido * 100).toInt().toString()
+                        classificacoesPersonalizadas = modelo.labelsDefault
                         val ehCacau = modelo.nomeArquivo == "detector.tflite" || modelo.nomeArquivo == "detector_doenca.tflite"
                         if (!ehCacau) {
                             usarModeloSecundario = false
@@ -302,22 +447,92 @@ fun TelaConfiguracaoModelo(
                 )
             }
 
+            if (modelosImportados.isNotEmpty()) {
+                item {
+                    SectionHeader(icon = Icons.Default.Inventory2, title = "Meus modelos importados")
+                }
+
+                items(modelosImportados, key = { it.path }) { imp ->
+                    val selecionado = modeloInternoPath == imp.path
+                    val mb = String.format(Locale.US, "%.1f MB", imp.tamanhoBytes / (1024f * 1024f))
+                    ElevatedCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(
+                                if (selecionado) Modifier.border(2.dp, verde, RoundedCornerShape(14.dp))
+                                else Modifier
+                            )
+                            .clickable {
+                                modeloSelecionado = null
+                                modeloExternoUri = null
+                                modeloInternoPath = imp.path
+                                modeloExternoNome = imp.nomeExibicao
+                                usarModeloSecundario = false
+                                val chaveImp = ModelConfig(modeloInternoPath = imp.path).chaveModeloPersistente()
+                                val salvasImp = PersistenciaLocalRegistros.carregarClassificacoesModelo(context, chaveImp)
+                                labelsTexto = if (salvasImp != null && salvasImp.size in 1..30) {
+                                    salvasImp.joinToString(", ")
+                                } else {
+                                    ""
+                                }
+                            },
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = if (selecionado) Color(0xFFE8F5E9) else Color.White
+                        ),
+                        elevation = CardDefaults.elevatedCardElevation(defaultElevation = if (selecionado) 0.dp else 1.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                if (selecionado) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                                null,
+                                tint = if (selecionado) verde else Color(0xFF78909C)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(imp.nomeExibicao, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF1C241D))
+                                Text("Arquivo próprio • $mb", fontSize = 11.sp, color = Color(0xFF5F6F61))
+                            }
+                            IconButton(
+                                onClick = {
+                                    if (PersistenciaLocalRegistros.excluirModeloImportado(context, imp.path)) {
+                                        if (modeloInternoPath == imp.path) {
+                                            modeloInternoPath = null
+                                            modeloExternoNome = ""
+                                            modeloSelecionado = MODELOS_EMBUTIDOS.firstOrNull()
+                                            labelsTexto = modeloSelecionado?.labelsDefault?.joinToString(", ").orEmpty()
+                                        }
+                                        modelosImportados = PersistenciaLocalRegistros.listarModelosImportados(context)
+                                    }
+                                },
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(Icons.Default.DeleteOutline, "Remover modelo importado", tint = Color(0xFFC62828), modifier = Modifier.size(19.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
                 val customAtivo = !modeloInternoPath.isNullOrBlank() || modeloExternoUri != null
-                Card(
+                ElevatedCard(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(
-                            width = if (customAtivo) 2.dp else 1.dp,
-                            color = if (customAtivo) verde else Color(0xFFDCE7DC),
-                            shape = RoundedCornerShape(14.dp)
+                        .then(
+                            if (customAtivo) Modifier.border(2.dp, verde, RoundedCornerShape(14.dp))
+                            else Modifier
                         ),
-                    colors = CardDefaults.cardColors(
+                    colors = CardDefaults.elevatedCardColors(
                         containerColor = if (customAtivo) Color(0xFFE8F5E9) else Color.White
                     ),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = if (customAtivo) 0.dp else 1.dp),
                     shape = RoundedCornerShape(14.dp)
                 ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         if (customAtivo) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.CheckCircle, null, tint = verde, modifier = Modifier.size(18.dp))
@@ -327,17 +542,32 @@ fun TelaConfiguracaoModelo(
                             OutlinedTextField(
                                 value = modeloExternoNome,
                                 onValueChange = { modeloExternoNome = it },
-                                label = { Text("Nome do seu modelo") },
+                                label = { Text("Nome do modelo") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         } else {
-                            Text(
-                                "Quer contar outra planta, fruta, folha ou praga? Você pode importar seu próprio arquivo de IA (.tflite ou pacote .zip):",
-                                fontSize = 12.sp,
-                                color = Color(0xFF5F6F61),
-                                lineHeight = 16.sp
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    "Usar modelo próprio (.tflite ou .zip)",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF1B5E20)
+                                )
+                                IconButton(
+                                    onClick = {
+                                        infoDialogTitulo = "Importar modelo próprio"
+                                        infoDialogTexto = "Aceita modelos TensorFlow Lite (.tflite) de YOLOv5/v8/v11/Seg/OBB/SSD ou pacotes .zip (BreedAI, Roboflow, Ultralytics) com labels.txt ou data.yaml rodando 100% offline."
+                                    },
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Icon(Icons.Default.Info, "Detalhes da importação", tint = Color(0xFF5F6F61), modifier = Modifier.size(17.dp))
+                                }
+                            }
                         }
 
                         OutlinedButton(
@@ -345,119 +575,146 @@ fun TelaConfiguracaoModelo(
                             enabled = !processandoArquivo,
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = verde),
                             border = BorderStroke(1.dp, verde),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)
                         ) {
                             if (processandoArquivo) {
                                 CircularProgressIndicator(modifier = Modifier.size(18.dp), color = verde, strokeWidth = 2.dp)
                                 Spacer(Modifier.width(8.dp))
-                                Text("VERIFICANDO ARQUIVO...")
+                                Text("Verificando arquivo...", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             } else {
                                 Icon(Icons.Default.Upload, null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
+                                Spacer(Modifier.width(8.dp))
                                 Text(
-                                    if (customAtivo) "TROCAR ARQUIVO DE IA (.TFLITE / .ZIP)" else "IMPORTAR MODELO PRÓPRIO (.TFLITE / .ZIP)",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
+                                    if (customAtivo) "Importar outro arquivo (.tflite ou .zip)" else "Importar arquivo (.tflite ou .zip)",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.SemiBold
                                 )
+                            }
+                        }
+
+                        if (customAtivo) {
+                            OutlinedButton(
+                                onClick = { launcherLabelsAvulso.launch("*/*") },
+                                enabled = !processandoArquivo,
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF1B5E20)),
+                                border = BorderStroke(1.dp, Color(0xFFA5D6A7)),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Description, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Anexar classes (.txt ou data.yaml)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
                 }
             }
 
-            // ── SEÇÃO 2: ANÁLISE EM 2 ETAPAS PARA CACAU ──
-            item {
-                SectionHeader(icon = Icons.Default.AutoAwesome, title = "2. Análise Dupla para Cacau (Opcional)")
-            }
-
+            // ── SEÇÃO 2: ANÁLISE DUPLA PARA CACAU (CONDICIONAL / EXPANSÍVEL) ──
             item {
                 val modeloAtualEhCacau = modeloInternoPath.isNullOrBlank() &&
                         modeloExternoUri == null &&
                         (modeloSelecionado == null ||
                                 modeloSelecionado?.nomeArquivo == "detector.tflite" ||
                                 modeloSelecionado?.nomeArquivo == "detector_doenca.tflite")
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(
-                            width = if (usarModeloSecundario) 2.dp else 1.dp,
-                            color = if (usarModeloSecundario) verde else Color(0xFFDCE7DC),
-                            shape = RoundedCornerShape(14.dp)
-                        ),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (usarModeloSecundario) Color(0xFFE8F5E9) else Color.White
-                    ),
-                    shape = RoundedCornerShape(14.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+
+                if (!modeloAtualEhCacau && !usarModeloSecundario && !mostrarCacauAvancado) {
+                    OutlinedCard(
+                        onClick = { mostrarCacauAvancado = true },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.outlinedCardColors(containerColor = Color.White),
+                        border = BorderStroke(1.dp, Color(0xFFDCE7DC)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    "Contar ao vivo + Diagnosticar Doenças na Foto",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = Color(0xFF1B5E20)
-                                )
-                                Text(
-                                    if (usarModeloSecundario) "Ativado • Indicado para avaliação de cacau"
-                                    else "Opcional • Deixe desligado para outras culturas",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (usarModeloSecundario) verde else Color(0xFF5F6F61)
-                                )
-                            }
-                            Spacer(Modifier.width(10.dp))
-                            Switch(
-                                checked = usarModeloSecundario,
-                                onCheckedChange = { ligar ->
-                                    usarModeloSecundario = ligar
-                                    if (ligar && modeloAtualEhCacau) {
-                                        val baseLabels = (listaLabels + com.example.myapplication.data.LABELS_DOENCA_CACAU + listOf("cacau", "fruto"))
-                                            .distinct()
-                                        labelsTexto = baseLabels.joinToString(", ")
-                                    }
-                                }
+                            Text(
+                                "Recursos especializados (Cacau CEPEC)",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF4E6E52)
                             )
+                            Icon(Icons.Default.ExpandMore, null, tint = Color(0xFF4E6E52), modifier = Modifier.size(18.dp))
                         }
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (usarModeloSecundario) Color.White.copy(alpha = 0.78f) else Color(0xFFF6F9F6),
-                            border = BorderStroke(1.dp, Color(0xFFDCE7DC)),
-                            modifier = Modifier.fillMaxWidth()
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SectionHeader(icon = Icons.Default.AutoAwesome, title = "Análise dupla para cacau")
+                        ElevatedCard(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(
+                                    if (usarModeloSecundario) Modifier.border(2.dp, verde, RoundedCornerShape(14.dp))
+                                    else Modifier
+                                ),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = if (usarModeloSecundario) Color(0xFFE8F5E9) else Color.White
+                            ),
+                            elevation = CardDefaults.elevatedCardElevation(defaultElevation = if (usarModeloSecundario) 0.dp else 1.dp),
+                            shape = RoundedCornerShape(14.dp)
                         ) {
                             Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text(
-                                    "Como funciona na prática:",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF1B5E20)
-                                )
-                                Text(
-                                    "1. Na câmera ao vivo: usa o detector rápido para marcar os frutos sem engasgos.\n" +
-                                            "2. Depois de tirar a foto: uma segunda IA avalia cada fruto e separa automaticamente em Sadio, Podridão Parda, Monilíase ou Vassoura de Bruxa.",
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF3E4E40),
-                                    lineHeight = 16.sp
-                                )
-                                if (!modeloAtualEhCacau) {
-                                    Text(
-                                        "Obs.: você selecionou outro modelo acima (não é cacau). Mantenha esta opção desligada para não misturar doenças de cacau nas suas fotos.",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = Color(0xFFE65100),
-                                        lineHeight = 15.sp
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                "Contar + classificar doenças",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                color = Color(0xFF1B5E20)
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            IconButton(
+                                                onClick = {
+                                                    infoDialogTitulo = "Como funciona a análise dupla"
+                                                    infoDialogTexto = "1. Na câmera ao vivo: detecta os frutos rapidamente.\n2. Após a foto: o modelo de doenças separa cada fruto automaticamente em Sadio, Podridão Parda, Monilíase ou Vassoura de Bruxa."
+                                                },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(Icons.Default.Info, "Ajuda sobre análise dupla", tint = Color(0xFF5F6F61), modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                        Text(
+                                            when {
+                                                !modeloAtualEhCacau && usarModeloSecundario -> "Aviso: modelo atual não é cacau"
+                                                usarModeloSecundario -> "Ativada • Separa frutos por doença na foto"
+                                                else -> "Opcional • Somente para avaliações de cacau"
+                                            },
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = when {
+                                                !modeloAtualEhCacau && usarModeloSecundario -> Color(0xFFE65100)
+                                                usarModeloSecundario -> verde
+                                                else -> Color(0xFF5F6F61)
+                                            },
+                                            maxLines = 1
+                                        )
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Switch(
+                                        checked = usarModeloSecundario,
+                                        onCheckedChange = { ligar ->
+                                            usarModeloSecundario = ligar
+                                            if (ligar && modeloAtualEhCacau) {
+                                                val baseLabels = (listaLabels + com.example.myapplication.data.LABELS_DOENCA_CACAU + listOf("cacau", "fruto"))
+                                                    .distinct()
+                                                labelsTexto = baseLabels.joinToString(", ")
+                                            }
+                                        }
                                     )
                                 }
                             }
@@ -466,17 +723,17 @@ fun TelaConfiguracaoModelo(
                 }
             }
 
-            // ── SEÇÃO 3: AJUSTE DE PRECISÃO E FILTROS ──
+            // ── SEÇÃO 3: PRECISÃO E FILTROS ──
             item {
-                SectionHeader(icon = Icons.Default.Tune, title = "3. Precisão e O que Contar")
+                SectionHeader(icon = Icons.Default.Tune, title = "Precisão e filtros")
             }
 
             item {
-                Card(
+                ElevatedCard(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    border = BorderStroke(1.dp, Color(0xFFDCE7DC))
+                    colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
                 ) {
                     Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Column {
@@ -486,7 +743,19 @@ fun TelaConfiguracaoModelo(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("Certeza mínima da IA: $thresholdVal%", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Certeza mínima: $thresholdVal%", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
+                                    Spacer(Modifier.width(4.dp))
+                                    IconButton(
+                                        onClick = {
+                                            infoDialogTitulo = "Certeza mínima da IA"
+                                            infoDialogTexto = "Diminua se a IA estiver deixando de marcar frutos. Aumente se estiver marcando folhas ou galhos por engano."
+                                        },
+                                        modifier = Modifier.size(22.dp)
+                                    ) {
+                                        Icon(Icons.Default.Info, "Ajuda sobre certeza mínima", tint = Color(0xFF5F6F61), modifier = Modifier.size(15.dp))
+                                    }
+                                }
                                 if (thresholdVal > 60) {
                                     Surface(shape = RoundedCornerShape(6.dp), color = Color(0xFFFFECB3)) {
                                         Text(
@@ -507,16 +776,9 @@ fun TelaConfiguracaoModelo(
                                 colors = SliderDefaults.colors(thumbColor = verde, activeTrackColor = verde)
                             )
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("10% (detecta mais)", fontSize = 11.sp, color = Color.Gray)
-                                Text("95% (mais exigente)", fontSize = 11.sp, color = Color.Gray)
+                                Text("10% (detecta mais)", fontSize = 11.sp, color = Color(0xFF5F6F61))
+                                Text("95% (mais exigente)", fontSize = 11.sp, color = Color(0xFF5F6F61))
                             }
-                            Text(
-                                "Dica: diminua se a IA perder frutos; aumente se estiver marcando folhas ou galhos por engano.",
-                                fontSize = 11.sp,
-                                color = Color(0xFF5F6F61),
-                                lineHeight = 15.sp,
-                                modifier = Modifier.padding(top = 4.dp)
-                            )
                         }
 
                         HorizontalDivider(color = Color(0xFFEEF3EE))
@@ -529,13 +791,51 @@ fun TelaConfiguracaoModelo(
                             Text("Máximo de itens por foto", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = Color(0xFF1B5E20))
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(onClick = { if (maxResultados > 1) maxResultados-- }, modifier = Modifier.size(36.dp)) {
-                                    Icon(Icons.Default.RemoveCircle, null, tint = Color(0xFFC62828), modifier = Modifier.size(28.dp))
+                                    Icon(Icons.Default.RemoveCircle, "Diminuir máximo", tint = Color(0xFF546E7A), modifier = Modifier.size(28.dp))
                                 }
                                 Text("$maxResultados", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 12.dp))
-                                IconButton(onClick = { if (maxResultados < 50) maxResultados++ }, modifier = Modifier.size(36.dp)) {
-                                    Icon(Icons.Default.AddCircle, null, tint = verde, modifier = Modifier.size(28.dp))
+                                IconButton(onClick = { if (maxResultados < 300) maxResultados++ }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Default.AddCircle, "Aumentar máximo", tint = verde, modifier = Modifier.size(28.dp))
                                 }
                             }
+                        }
+
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            listOf(25, 50, 100, 250).forEach { preset ->
+                                FilterChip(
+                                    selected = maxResultados == preset,
+                                    onClick = { maxResultados = preset },
+                                    label = { Text("$preset itens", fontSize = 11.sp) }
+                                )
+                            }
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Exportar % por classe no CSV",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF1B5E20)
+                                )
+                                Text(
+                                    "Calcula automaticamente IA_Pct_<Classe> apenas na planilha exportada",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF5F6F61)
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Switch(
+                                checked = incluirPercentualClassesCsv,
+                                onCheckedChange = { incluirPercentualClassesCsv = it }
+                            )
                         }
 
                         HorizontalDivider(color = Color(0xFFEEF3EE))
@@ -700,7 +1000,7 @@ fun TelaConfiguracaoModelo(
                         if (listaLabels.isNotEmpty()) {
                             TextButton(
                                 onClick = { labelsTexto = "" },
-                                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFC62828)),
+                                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFF546E7A)),
                                 contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
                             ) {
                                 Icon(Icons.Default.ClearAll, null, modifier = Modifier.size(16.dp))
@@ -716,17 +1016,29 @@ fun TelaConfiguracaoModelo(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                "Classificações na revisão (Regional)",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp,
-                                color = Color(0xFF1B5E20)
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "Classificações na revisão",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF1B5E20)
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = {
+                                        infoDialogTitulo = "Classificações da revisão pós-foto"
+                                        infoDialogTexto = "Opções exibidas ao tocar em um fruto depois da foto. Você pode remover o que não usa na sua região ou adicionar novos rótulos."
+                                    },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(Icons.Default.Info, "Ajuda sobre classificações", tint = Color(0xFF5F6F61), modifier = Modifier.size(15.dp))
+                                }
+                            }
                             TextButton(
                                 onClick = {
                                     com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
                                         .limparClassificacoesModelo(context, chaveModeloAtual)
-                                    val baseModelo = if (classesDisponiveisNoModelo.size in 2..15) {
+                                    val baseModelo = if (classesDisponiveisNoModelo.size in 2..30) {
                                         classesDisponiveisNoModelo
                                     } else {
                                         modeloSelecionado?.labelsDefault ?: listaLabels
@@ -738,12 +1050,6 @@ fun TelaConfiguracaoModelo(
                                 Text("Puxar do modelo", fontSize = 11.sp, color = verde, fontWeight = FontWeight.SemiBold)
                             }
                         }
-                        Text(
-                            "Puxadas do modelo atual. Remova doenças que não ocorrem na sua região ou adicione suas próprias classificações:",
-                            fontSize = 11.sp,
-                            color = Color(0xFF5F6F61),
-                            lineHeight = 15.sp
-                        )
                         if (classificacoesPersonalizadas.isNotEmpty()) {
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 classificacoesPersonalizadas.chunked(2).forEach { linha ->
@@ -861,20 +1167,42 @@ private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloI
         if (isZipContainer && !ObjectDetectorHelper.isTfliteFlatBuffer(rawBytes)) {
             var tfliteBytes: ByteArray? = null
             var manifest: ModelConfig.ManifestData? = null
+            var labelsExternoPrioridade = -1
+            var labelsExternoNome = ""
+            var labelsExternoConteudo = ""
             ZipInputStream(rawBytes.inputStream()).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
                     // Proteção contra Zip Slip (caminhos maliciosos ../) e Zip Bomb
                     if (!entry.isDirectory && ImportadorPlanilhaUniversal.isSafeZipEntryName(entry.name)) {
                         val nomeLower = entry.name.lowercase(Locale.ROOT)
+                        val baseLower = nomeLower.substringAfterLast('/')
                         when {
                             nomeLower.endsWith(".tflite") -> {
                                 tfliteBytes = ImportadorPlanilhaUniversal.readZipEntryBounded(zis, maxTamanhoModelo)
                             }
-                            nomeLower == "model_config.json" || nomeLower.endsWith("/model_config.json") -> {
+                            baseLower == "model_config.json" -> {
                                 val jsonBytes = ImportadorPlanilhaUniversal.readZipEntryBounded(zis, 1024 * 1024)
                                 if (jsonBytes != null) {
                                     manifest = ModelConfig.fromManifestJson(jsonBytes.toString(Charsets.UTF_8))
+                                }
+                            }
+                            baseLower in setOf("labels.txt", "classes.txt", "labelmap.txt", "data.yaml", "metadata.yaml") ||
+                                baseLower.endsWith(".yaml") || baseLower.endsWith(".yml") -> {
+                                val prio = when (baseLower) {
+                                    "labels.txt", "classes.txt", "labelmap.txt" -> 3
+                                    "data.yaml" -> 2
+                                    "metadata.yaml" -> 1
+                                    else -> 0
+                                }
+                                val txtBytes = ImportadorPlanilhaUniversal.readZipEntryBounded(zis, 1024 * 1024)
+                                if (txtBytes != null && prio >= labelsExternoPrioridade) {
+                                    val txt = txtBytes.toString(Charsets.UTF_8)
+                                    if (txt.isNotBlank()) {
+                                        labelsExternoPrioridade = prio
+                                        labelsExternoNome = baseLower
+                                        labelsExternoConteudo = txt
+                                    }
                                 }
                             }
                         }
@@ -890,12 +1218,27 @@ private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloI
 
             val destFile = File(dirModelos, "${nomeSanitizado}_${System.currentTimeMillis()}.tflite")
             destFile.writeBytes(modelData)
-            val inspecao = ObjectDetectorHelper.inspecionarModeloArquivo(destFile)
-            if (!inspecao.compativel) {
+            val inspecaoBruta = ObjectDetectorHelper.inspecionarModeloArquivo(destFile)
+            if (!inspecaoBruta.compativel) {
                 destFile.delete()
-                return ModeloImportado(compativel = false, inspecao = inspecao, erroMensagem = inspecao.avisoUsuario)
+                return ModeloImportado(compativel = false, inspecao = inspecaoBruta, erroMensagem = inspecaoBruta.avisoUsuario)
             }
-            val labels = manifest?.labelsFiltro?.takeIf { it.isNotEmpty() } ?: inspecao.labelsExtraidas
+            val labelsExternas = if (labelsExternoConteudo.isNotBlank()) {
+                ObjectDetectorHelper.parseLabelsDeTextoOuYaml(labelsExternoConteudo, labelsExternoNome)
+            } else {
+                emptyList()
+            }
+            val labels = manifest?.labelsFiltro?.takeIf { it.isNotEmpty() }
+                ?: inspecaoBruta.labelsExtraidas.takeIf { it.isNotEmpty() }
+                ?: labelsExternas
+            val inspecaoFinal = if (inspecaoBruta.labelsExtraidas.isEmpty() && labels.isNotEmpty()) {
+                inspecaoBruta.copy(
+                    labelsExtraidas = labels,
+                    avisoUsuario = "Compatível! Encontramos ${labels.size} categoria(s) no pacote."
+                )
+            } else {
+                inspecaoBruta
+            }
             return ModeloImportado(
                 compativel = true,
                 tflitePath = destFile.absolutePath,
@@ -904,7 +1247,7 @@ private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloI
                 threshold = manifest?.threshold,
                 maxResultados = manifest?.maxResultados,
                 usarModeloSecundario = manifest?.usarModeloSecundario,
-                inspecao = inspecao
+                inspecao = inspecaoFinal
             )
         }
 
@@ -937,13 +1280,17 @@ private fun importarArquivoModeloPermanente(context: Context, uri: Uri): ModeloI
     }
 }
 
-private fun traduzirLabelDisplay(label: String): String {
+internal fun traduzirLabelDisplay(label: String): String {
     return when (label.trim().lowercase(Locale.ROOT)) {
-        "apple" -> "apple (Maçã)"
-        "banana" -> "banana (Banana)"
-        "orange" -> "orange (Laranja)"
-        "podridaoparda" -> "PodridaoParda"
-        "vassourabruxa" -> "VassouraBruxa"
+        "apple" -> "Maçã"
+        "banana" -> "Banana"
+        "orange" -> "Laranja"
+        "podridaoparda", "podridão parda", "podridao", "podridão" -> "Podridão Parda"
+        "vassourabruxa", "vassoura de bruxa", "vassoura" -> "Vassoura de Bruxa"
+        "moniliase", "monilíase" -> "Monilíase"
+        "sadio" -> "Sadio"
+        "cacau" -> "Cacau"
+        "fruto" -> "Fruto"
         else -> label
     }
 }
@@ -1012,37 +1359,38 @@ private fun CartaoModeloEmbutido(
     onClick: () -> Unit
 ) {
     val verde = Color(0xFF2E7D32)
-    Card(
+    ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
-            .border(
-                width = if (selecionado) 2.dp else 1.dp,
-                color = if (selecionado) verde else Color.LightGray,
-                shape = RoundedCornerShape(12.dp)
+            .then(
+                if (selecionado) Modifier.border(2.dp, verde, RoundedCornerShape(14.dp))
+                else Modifier
             )
             .clickable { onClick() },
-        colors = CardDefaults.cardColors(
+        colors = CardDefaults.elevatedCardColors(
             containerColor = if (selecionado) Color(0xFFE8F5E9) else Color.White
         ),
-        shape = RoundedCornerShape(12.dp)
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = if (selecionado) 0.dp else 1.dp),
+        shape = RoundedCornerShape(14.dp)
     ) {
         Row(
-            Modifier.padding(16.dp),
+            Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 if (selecionado) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
                 null,
-                tint = if (selecionado) verde else Color.Gray
+                tint = if (selecionado) verde else Color(0xFF78909C)
             )
             Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(modelo.nomeExibicao, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text(modelo.descricao, fontSize = 12.sp, color = Color.Gray)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(modelo.nomeExibicao, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF1C241D))
+                Text(modelo.descricao, fontSize = 12.sp, color = Color(0xFF5F6F61))
                 Text(
                     "Identifica: ${modelo.labelsDefault.joinToString(", ") { traduzirLabelDisplay(it) }}",
                     fontSize = 11.sp,
-                    color = Color(0xFF558B2F)
+                    color = Color(0xFF2E7D32),
+                    fontWeight = FontWeight.Medium
                 )
             }
         }
