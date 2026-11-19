@@ -184,9 +184,10 @@ class ObjectDetectorHelper(
         close()
 
         try {
-            // 3 threads + XNNPACK entregam inferência rápida mantendo núcleos livres para câmera 60 FPS e UI
+            val idealThreads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4)
+            // Threads adaptativas + XNNPACK entregam inferência fluida em vários aparelhos Android
             val options = Interpreter.Options().apply {
-                setNumThreads(3)
+                setNumThreads(idealThreads)
                 setUseXNNPACK(true)
             }
             interpreter = Interpreter(file, options)
@@ -231,9 +232,10 @@ class ObjectDetectorHelper(
                 } else {
                     emptyList()
                 }
+                val idealThreads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(2, 4)
                 val tvDet = try {
                     val tvOptsBuilder = ObjectDetector.ObjectDetectorOptions.builder()
-                        .setBaseOptions(BaseOptions.builder().setNumThreads(3).build())
+                        .setBaseOptions(BaseOptions.builder().setNumThreads(idealThreads).build())
                         .setScoreThreshold(min(scoreThreshold, 0.10f))
                         .setMaxResults(max(maxResults, 25))
                     if (allowList.isNotEmpty()) {
@@ -244,7 +246,7 @@ class ObjectDetectorHelper(
                     if (allowList.isNotEmpty()) {
                         try {
                             val fallbackOpts = ObjectDetector.ObjectDetectorOptions.builder()
-                                .setBaseOptions(BaseOptions.builder().setNumThreads(3).build())
+                                .setBaseOptions(BaseOptions.builder().setNumThreads(idealThreads).build())
                                 .setScoreThreshold(min(scoreThreshold, 0.10f))
                                 .setMaxResults(max(maxResults, 25))
                                 .build()

@@ -1,15 +1,21 @@
 package com.example.myapplication
 
 import android.net.Uri
+import com.example.myapplication.data.ConfigConversaoRendimento
 import com.example.myapplication.data.LABELS_DOENCA_CACAU
 import com.example.myapplication.data.MODELOS_EMBUTIDOS
 import com.example.myapplication.data.MOTIVOS_NAO_AVALIAVEL
 import com.example.myapplication.data.ModelConfig
+import com.example.myapplication.data.PresetRendimento
 import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
+import com.example.myapplication.data.TemplateCultura
 import com.example.myapplication.data.TipoVariavelExtra
 import com.example.myapplication.data.VariavelExtra
+import com.example.myapplication.data.calcularRankingTratamentos
+import com.example.myapplication.data.calcularRendimentoColeta
 import com.example.myapplication.data.calcularResumoAgronomico
+import com.example.myapplication.data.gerarResumoTextoColeta
 import com.example.myapplication.data.variaveisExtrasIniciais
 import com.example.myapplication.userinterface.CaixaAuditavel
 import com.example.myapplication.userinterface.DetEstilizada
@@ -525,5 +531,117 @@ class ModelAndStateUnitTest {
         val result = fundirContagemEDiagnosticoBreedAI(contagem, secundario)
         assertEquals(2, result.size)
         assertTrue(result.any { it.rotulo == "PodridaoParda" && kotlin.math.abs(it.confianca - 0.26f) < 0.001f })
+    }
+
+    private fun registroTeste(
+        tratamento: String,
+        parcela: String,
+        planta: String,
+        situacao: SituacaoPlanta,
+        totalObjetos: Int,
+        caixas: List<CaixaAuditavel> = emptyList(),
+        coletaNome: String = "Coleta",
+        motivoNaoAvaliavel: String = ""
+    ): RegistroColeta = RegistroColeta(
+        uri = Mockito.mock(Uri::class.java),
+        idCompleto = "${tratamento}_P${parcela}_Pl$planta",
+        coletaNome = coletaNome,
+        tratamento = tratamento,
+        parcela = parcela,
+        planta = planta,
+        situacaoPlanta = situacao,
+        motivoNaoAvaliavel = motivoNaoAvaliavel,
+        diagnostico = "",
+        data = "2026-11-19 10:00:00",
+        lat = 0.0,
+        lng = 0.0,
+        totalObjetos = totalObjetos,
+        caixas = caixas
+    )
+
+    @Test
+    fun `testCalcularRendimentoColeta_CacauDescontaDoencasECalculaArrobasPorHa`() {
+        val config = ConfigConversaoRendimento.dePreset(PresetRendimento.CACAU_ARROBA)
+
+        val caixasPl1 = List(20) {
+            CaixaAuditavel(0.1f, 0.1f, 0.2f, 0.2f, rotulo = "Sadio", manual = false, confianca = 0.9f)
+        } + List(5) {
+            CaixaAuditavel(0.3f, 0.3f, 0.4f, 0.4f, rotulo = "Vassoura", manual = false, confianca = 0.8f)
+        }
+        val caixasPl2 = List(10) {
+            CaixaAuditavel(0.1f, 0.1f, 0.2f, 0.2f, rotulo = "Sadio", manual = false, confianca = 0.9f)
+        } + List(3) {
+            CaixaAuditavel(0.3f, 0.3f, 0.4f, 0.4f, rotulo = "Podridão", manual = false, confianca = 0.8f)
+        }
+
+        val registros = listOf(
+            registroTeste("T1", "1", "1", SituacaoPlanta.NORMAL, 25, caixas = caixasPl1),
+            registroTeste("T1", "1", "2", SituacaoPlanta.NORMAL, 13, caixas = caixasPl2),
+            registroTeste("T1", "1", "3", SituacaoPlanta.SEM_FRUTOS, 0),
+            registroTeste("T1", "1", "4", SituacaoPlanta.NAO_AVALIAVEL, 0, motivoNaoAvaliavel = "Planta morta")
+        )
+
+        val resumo = calcularRendimentoColeta(registros, config)
+        assertEquals(30, resumo.totalAproveitaveis)
+        assertEquals(8, resumo.totalDoentes)
+        assertEquals(75.0, resumo.estandePercentual, 0.001)
+        assertEquals(10.0, resumo.mediaAproveitaveisPlantaViva, 0.001)
+        assertEquals(30.0 / 22.0, resumo.kgAcumulado, 0.001)
+        assertEquals((30.0 / 22.0) / 15.0, resumo.unidadesAcumuladas, 0.0001)
+        assertEquals(505.0, resumo.potencialKgHa, 0.001)
+        assertEquals(378.75, resumo.realKgHa, 0.001)
+        assertEquals(25.25, resumo.realUnidadesHa, 0.001)
+        assertTrue(resumo.temClassificacaoDoenca)
+
+        val resumoSemDesconto = calcularRendimentoColeta(registros, config.copy(descontarDoencas = false))
+        assertEquals(38, resumoSemDesconto.totalAproveitaveis)
+        assertEquals(0, resumoSemDesconto.totalDoentes)
+    }
+
+    @Test
+    fun `testCalcularRankingTratamentos_OrdenaPorMediaSadiosEGeraResumoWhatsApp`() {
+        val config = ConfigConversaoRendimento.dePreset(PresetRendimento.CACAU_ARROBA)
+
+        val caixasTB = List(40) {
+            CaixaAuditavel(0.1f, 0.1f, 0.2f, 0.2f, rotulo = "Sadio", manual = false, confianca = 0.9f)
+        }
+        val caixasTA1 = List(15) {
+            CaixaAuditavel(0.1f, 0.1f, 0.2f, 0.2f, rotulo = "Sadio", manual = false, confianca = 0.9f)
+        } + List(5) {
+            CaixaAuditavel(0.4f, 0.4f, 0.5f, 0.5f, rotulo = "Vassoura", manual = false, confianca = 0.85f)
+        }
+        val caixasTA2 = List(15) {
+            CaixaAuditavel(0.1f, 0.1f, 0.2f, 0.2f, rotulo = "Sadio", manual = false, confianca = 0.9f)
+        }
+
+        val registros = listOf(
+            registroTeste("T-A", "1", "1", SituacaoPlanta.NORMAL, 20, caixas = caixasTA1, coletaNome = "Ensaio Sul"),
+            registroTeste("T-A", "1", "2", SituacaoPlanta.NORMAL, 15, caixas = caixasTA2, coletaNome = "Ensaio Sul"),
+            registroTeste("T-B", "1", "1", SituacaoPlanta.NORMAL, 40, caixas = caixasTB, coletaNome = "Ensaio Sul")
+        )
+
+        val ranking = calcularRankingTratamentos(registros, config)
+        assertEquals(2, ranking.size)
+        assertEquals("T-B", ranking[0].tratamento)
+        assertEquals(40.0, ranking[0].mediaAproveitaveis, 0.001)
+        assertEquals("T-A", ranking[1].tratamento)
+        assertEquals(15.0, ranking[1].mediaAproveitaveis, 0.001)
+        assertEquals(5, ranking[1].totalDoentes)
+        assertEquals((5.0 * 100.0) / 35.0, ranking[1].taxaDoencaPercentual, 0.01)
+
+        val texto = gerarResumoTextoColeta(
+            coletaNome = "Ensaio Sul",
+            labelTratamento = "Clone",
+            registros = registros,
+            config = config,
+            templateCultura = TemplateCultura.FRUTICULTURA
+        )
+        assertTrue(texto.contains("*BreedAI • Resumo da Coleta*"))
+        assertTrue(texto.contains("Coleta: Ensaio Sul"))
+        assertTrue(texto.contains("Rendimento líquido (sadios):"))
+        assertTrue(texto.contains("0,21 @"))
+        assertTrue(texto.contains("@/ha"))
+        assertTrue(texto.contains("Perdas por doenças: 5"))
+        assertTrue(texto.contains("1. T-B: 40,0"))
     }
 }

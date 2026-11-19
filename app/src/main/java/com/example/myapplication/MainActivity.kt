@@ -5,14 +5,13 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.AspectRatio
-import androidx.camera.core.ImageCapture
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -43,6 +42,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.myapplication.data.ConfigConversaoRendimento
 import com.example.myapplication.data.MOTIVOS_NAO_AVALIAVEL
 import com.example.myapplication.data.ModelConfig
 import com.example.myapplication.data.PontoFormulario
@@ -51,10 +51,13 @@ import com.example.myapplication.data.SituacaoPlanta
 import com.example.myapplication.data.TemplateCultura
 import com.example.myapplication.data.TipoVariavelExtra
 import com.example.myapplication.data.VariavelExtra
+import com.example.myapplication.data.calcularRendimentoColeta
+import com.example.myapplication.data.formatarEstimativaCurta
 import com.example.myapplication.userinterface.*
 import com.example.myapplication.userinterface.util.ImportadorPlanilhaUniversal
 import com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
 import com.example.myapplication.userinterface.util.copiarUriGaleriaParaArquivoLocal
+import com.example.myapplication.userinterface.util.criarImageCaptureBreedAI
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -72,6 +75,31 @@ import java.util.UUID
 private val VERDE_ESCURO = Color(0xFF1B5E20)
 private val VERDE_APP = Color(0xFF2E7D32)
 
+internal fun formatarDiagnosticoRegistro(
+    situacao: SituacaoPlanta,
+    motivoNaoAval: String,
+    totalObjetos: Int,
+    caixas: List<CaixaAuditavel>
+): String = when (situacao) {
+    SituacaoPlanta.NORMAL -> {
+        val contagemClasses = caixas
+            .groupingBy { rotuloAmigavel(it.rotulo) }
+            .eachCount()
+        val temClasseEspecifica = caixas.any { c ->
+            val low = c.rotulo.trim().lowercase(Locale.ROOT)
+            low.isNotEmpty() && low != "cacau" && low != "fruto" && low != "objeto"
+        }
+        if ((contagemClasses.size > 1 || temClasseEspecifica) && contagemClasses.isNotEmpty()) {
+            val resumo = contagemClasses.entries.joinToString(", ") { "${it.key}: ${it.value}" }
+            "$totalObjetos ($resumo)"
+        } else {
+            totalObjetos.toString()
+        }
+    }
+    SituacaoPlanta.SEM_FRUTOS -> "Sem Frutos (0)"
+    SituacaoPlanta.NAO_AVALIAVEL -> "Não avaliável ($motivoNaoAval)"
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,6 +110,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if ((keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) &&
+            (event == null || event.repeatCount == 0)
+        ) {
+            val tratado = VolumeShutterBridge.onShutter?.invoke() == true
+            if (tratado) return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 }
 
@@ -124,6 +162,9 @@ fun BreedAIApp() {
 
     var latAtual by remember { mutableDoubleStateOf(0.0) }
     var lngAtual by remember { mutableDoubleStateOf(0.0) }
+    val gpsAtivo = latAtual != 0.0 || lngAtual != 0.0
+    var configRendimento by remember { mutableStateOf(ConfigConversaoRendimento()) }
+    var mostrarDialogConfigRendimento by remember { mutableStateOf(false) }
 
     var modelConfig by remember {
         mutableStateOf(PersistenciaLocalRegistros.carregarConfiguracaoModelo(context))
@@ -191,7 +232,7 @@ fun BreedAIApp() {
         for (i in pontos.indices) {
             val ponto = pontos[i]
             val idCompleto = "${ponto.tratamento}_P${ponto.parcela}_Pl${ponto.planta}"
-            val reg = registros.firstOrNull { it.idCompleto == idCompleto }
+            val reg = registros.firstOrNull { it.idCompleto.equals(idCompleto, ignoreCase = true) }
             val novoPonto = if (reg != null) {
                 val resumo = when (reg.situacaoPlanta) {
                     SituacaoPlanta.NORMAL -> "${reg.totalObjetos} obj."
@@ -245,7 +286,14 @@ fun BreedAIApp() {
                 labelPlanta = labelPlanta,
                 tipoNumParcela = tipoNumParcela,
                 tipoNumPlanta = tipoNumPlanta,
-                autoAvancarPlanta = autoAvancarPlanta
+                autoAvancarPlanta = autoAvancarPlanta,
+                rendimentoAtivo = configRendimento.ativo,
+                rendimentoPresetId = configRendimento.presetId,
+                rendimentoUnidade = configRendimento.unidadeSimbolo,
+                rendimentoItensPorKg = configRendimento.itensPorKg,
+                rendimentoKgPorUnidade = configRendimento.kgPorUnidade,
+                rendimentoPlantasPorHa = configRendimento.plantasPorHa,
+                rendimentoDescontarDoencas = configRendimento.descontarDoencas
             )
         )
     }
@@ -265,21 +313,26 @@ fun BreedAIApp() {
         tipoNumParcela = cfg.tipoNumParcela
         tipoNumPlanta = cfg.tipoNumPlanta
         autoAvancarPlanta = cfg.autoAvancarPlanta
+        configRendimento = cfg.toConfigRendimento()
+
+        historicoTratamentos.clear()
+        val tratamentosVistos = LinkedHashSet<String>()
 
         val salvos = PersistenciaLocalRegistros.carregarRegistros(context)
         listaRegistros.clear()
         listaRegistros.addAll(salvos)
-        salvos.map { it.tratamento }.filter { it.isNotBlank() }.distinct().forEach {
-            if (!historicoTratamentos.contains(it)) historicoTratamentos.add(it)
+        salvos.map { it.tratamento.trim() }.filter { it.isNotBlank() }.forEach {
+            if (tratamentosVistos.size < 40) tratamentosVistos.add(it)
         }
 
         val (_, formSalvo) = PersistenciaLocalRegistros.carregarFormulario(context)
         formularioPontos.clear()
         formularioPontos.addAll(formSalvo)
         reconciliarFormularioComRegistros(formularioPontos, listaRegistros)
-        formSalvo.map { it.tratamento }.filter { it.isNotBlank() }.distinct().forEach {
-            if (!historicoTratamentos.contains(it)) historicoTratamentos.add(it)
+        formSalvo.map { it.tratamento.trim() }.filter { it.isNotBlank() }.forEach {
+            if (tratamentosVistos.size < 40) tratamentosVistos.add(it)
         }
+        historicoTratamentos.addAll(tratamentosVistos)
 
         sincronizarAtivasPorColeta(cfg.coletaNome)
         atualizarListaColetas()
@@ -371,6 +424,24 @@ fun BreedAIApp() {
     }
 
     // ── DIÁLOGOS GLOBAIS ──
+
+    if (mostrarDialogConfigRendimento) {
+        DialogConfiguracaoRendimento(
+            configAtual = configRendimento,
+            onDismiss = { mostrarDialogConfigRendimento = false },
+            onSalvar = { novaRend ->
+                configRendimento = novaRend
+                salvarMetadadosColeta()
+                mostrarDialogConfigRendimento = false
+                Toast.makeText(
+                    context,
+                    if (novaRend.ativo) "Conversão para ${novaRend.unidadeSimbolo} salva!"
+                    else "Conversão de rendimento desativada.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        )
+    }
 
     if (mostrarTutorialPrimeiraVez) {
         AlertDialog(
@@ -841,6 +912,7 @@ fun BreedAIApp() {
             caixasAuditadasIniciais = reg.caixas,
             modoSemFrutos = reg.situacaoPlanta == SituacaoPlanta.SEM_FRUTOS,
             classificacoesPersonalizadas = classificacoesAtivasModelo,
+            configRendimento = configRendimento,
             onAtualizarClassificacoes = { novasCls ->
                 classificacoesAtivasModelo = novasCls
                 PersistenciaLocalRegistros.salvarClassificacoesModelo(
@@ -848,17 +920,29 @@ fun BreedAIApp() {
                 )
             },
             onConfirmar = { totalObj, caixasNovas ->
-                val idx = listaRegistros.indexOfFirst { it.idCompleto == reg.idCompleto }
+                val idx = listaRegistros.indexOfFirst { it.idCompleto.equals(reg.idCompleto, ignoreCase = true) }
                 if (idx != -1) {
-                    listaRegistros[idx] = listaRegistros[idx].copy(
-                        diagnostico = totalObj.toString(),
-                        totalObjetos = totalObj,
-                        caixas = caixasNovas
+                    val atual = listaRegistros[idx]
+                    val situacaoFinal = atual.situacaoPlanta
+                    val totalFinal = if (situacaoFinal == SituacaoPlanta.NORMAL) totalObj else 0
+                    val caixasFinais = if (situacaoFinal == SituacaoPlanta.NORMAL) caixasNovas else emptyList()
+                    listaRegistros[idx] = atual.copy(
+                        diagnostico = formatarDiagnosticoRegistro(
+                            situacao = situacaoFinal,
+                            motivoNaoAval = atual.motivoNaoAvaliavel,
+                            totalObjetos = totalFinal,
+                            caixas = caixasFinais
+                        ),
+                        totalObjetos = totalFinal,
+                        caixas = caixasFinais
                     )
                     PersistenciaLocalRegistros.salvarRegistros(context, listaRegistros)
                     reconciliarFormularioComRegistros(formularioPontos, listaRegistros)
-                    PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
-                    Toast.makeText(context, "Registro atualizado ($totalObj objetos).", Toast.LENGTH_SHORT).show()
+                    if (formularioPontos.isNotEmpty()) {
+                        PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
+                    }
+                    atualizarListaColetas()
+                    Toast.makeText(context, "Registro atualizado ($totalFinal objetos).", Toast.LENGTH_SHORT).show()
                 }
                 registroParaEdicao = null
             },
@@ -906,6 +990,10 @@ fun BreedAIApp() {
                             PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, novo)
                         }
                         salvarMetadadosColeta()
+                        PersistenciaLocalRegistros.salvarVariaveisAtivasPorColeta(
+                            context, novo, variaveisExtras.filter { it.ativa }.map { it.id }
+                        )
+                        atualizarListaColetas()
                         Toast.makeText(context, "Nome da coleta salvo!", Toast.LENGTH_SHORT).show()
                     },
                     label1 = labelTratamento,
@@ -1203,29 +1291,20 @@ fun BreedAIApp() {
             ) {
                 val data = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.ROOT).format(Date())
                 val idCompleto = "${tratamento}_P${parcela}_Pl${planta}"
-                if (tratamento.isNotBlank() && !historicoTratamentos.contains(tratamento)) {
-                    historicoTratamentos.add(tratamento)
+                val tratLimpo = tratamento.trim()
+                if (tratLimpo.isNotBlank() &&
+                    historicoTratamentos.size < 40 &&
+                    historicoTratamentos.none { it.equals(tratLimpo, ignoreCase = true) }
+                ) {
+                    historicoTratamentos.add(tratLimpo)
                 }
-                val diagTexto = when (situacao) {
-                    SituacaoPlanta.NORMAL -> {
-                        val contagemClasses = caixas
-                            .groupingBy { rotuloAmigavel(it.rotulo) }
-                            .eachCount()
-                        val temClasseEspecifica = caixas.any { c ->
-                            val low = c.rotulo.trim().lowercase(Locale.ROOT)
-                            low.isNotEmpty() && low != "cacau" && low != "fruto" && low != "objeto"
-                        }
-                        if ((contagemClasses.size > 1 || temClasseEspecifica) && contagemClasses.isNotEmpty()) {
-                            val resumo = contagemClasses.entries.joinToString(", ") { "${it.key}: ${it.value}" }
-                            "$totalObjetos ($resumo)"
-                        } else {
-                            totalObjetos.toString()
-                        }
-                    }
-                    SituacaoPlanta.SEM_FRUTOS -> "Sem Frutos (0)"
-                    SituacaoPlanta.NAO_AVALIAVEL -> "Não avaliável ($motivoNaoAval)"
-                }
-                listaRegistros.removeAll { it.idCompleto == idCompleto }
+                val diagTexto = formatarDiagnosticoRegistro(
+                    situacao = situacao,
+                    motivoNaoAval = motivoNaoAval,
+                    totalObjetos = totalObjetos,
+                    caixas = caixas
+                )
+                listaRegistros.removeAll { it.idCompleto.equals(idCompleto, ignoreCase = true) }
                 listaRegistros.add(
                     RegistroColeta(
                         uri = uri,
@@ -1251,6 +1330,19 @@ fun BreedAIApp() {
                     PersistenciaLocalRegistros.salvarFormulario(context, formularioPontos, coletaNome)
                 }
                 atualizarListaColetas()
+                if (situacao == SituacaoPlanta.NORMAL) {
+                    val totObjColeta = listaRegistros
+                        .filter { it.situacaoPlanta == SituacaoPlanta.NORMAL }
+                        .sumOf { it.totalObjetos }
+                    val msgExtra = if (configRendimento.ativo) {
+                        val rend = calcularRendimentoColeta(listaRegistros, configRendimento)
+                        val sym = configRendimento.unidadeSimbolo.trim().ifBlank { "unid" }
+                        " • Coleta: $totObjColeta (≈ ${formatarEstimativaCurta(rend.unidadesAcumuladas, sym)})"
+                    } else {
+                        " • Total coleta: $totObjColeta"
+                    }
+                    Toast.makeText(context, "Salvo: $totalObjetos$msgExtra", Toast.LENGTH_SHORT).show()
+                }
             }
 
             val classesExportacao = remember(modelConfig, classificacoesAtivasModelo, listaRegistros.toList()) {
@@ -1282,6 +1374,20 @@ fun BreedAIApp() {
                 )
             }
 
+            val rendimentoResumoHero = remember(listaRegistros.toList(), configRendimento) {
+                if (configRendimento.ativo && listaRegistros.isNotEmpty()) {
+                    val rend = calcularRendimentoColeta(listaRegistros, configRendimento)
+                    val sym = configRendimento.unidadeSimbolo.trim().ifBlank { "unid" }
+                    val acum = formatarEstimativaCurta(rend.unidadesAcumuladas, sym)
+                    val ha = if (configRendimento.plantasPorHa > 0) {
+                        " • ${formatarEstimativaCurta(rend.realUnidadesHa, "$sym/ha")}"
+                    } else ""
+                    "$acum$ha"
+                } else {
+                    null
+                }
+            }
+
             when (abaSelecionada) {
                 0 -> TelaInicioPassoAPasso(
                     coletaNome = coletaNome,
@@ -1290,6 +1396,8 @@ fun BreedAIApp() {
                     totalRegistros = listaRegistros.size,
                     totalPontosFormulario = formularioPontos.size,
                     pontosColetadosFormulario = formularioPontos.count { it.coletado },
+                    rendimentoResumoTexto = rendimentoResumoHero,
+                    onAbrirConfigRendimento = { mostrarDialogConfigRendimento = true },
                     modelConfig = modelConfig,
                     variaveisAtivas = variaveisAtivas,
                     todasVariaveis = variaveisExtras,
@@ -1400,6 +1508,9 @@ fun BreedAIApp() {
                                 classificacoesPersonalizadas = classificacoesAtivasModelo,
                                 onAtualizarClassificacoes = ::atualizarClassificacoesAtivas,
                                 templateCultura = templateAtual,
+                                configRendimento = configRendimento,
+                                gpsAtivo = gpsAtivo,
+                                onAbrirConfigRendimento = { mostrarDialogConfigRendimento = true },
                                 onRegistrarPonto = { uri, ponto, situacao, motivo, totalObj, extras, caixas ->
                                     salvarOuAtualizarRegistro(
                                         uri = uri,
@@ -1449,6 +1560,9 @@ fun BreedAIApp() {
                                 classificacoesPersonalizadas = classificacoesAtivasModelo,
                                 onAtualizarClassificacoes = ::atualizarClassificacoesAtivas,
                                 templateCultura = templateAtual,
+                                configRendimento = configRendimento,
+                                gpsAtivo = gpsAtivo,
+                                onAbrirConfigRendimento = { mostrarDialogConfigRendimento = true },
                                 onSalvarColeta = { uri, trat, parc, pl, situacao, motivo, totalObj, extras, caixas ->
                                     salvarOuAtualizarRegistro(
                                         uri = uri,
@@ -1479,6 +1593,8 @@ fun BreedAIApp() {
                     pontosFormulario = formularioPontos,
                     incluirPercentualClassesCsv = modelConfig.incluirPercentualClassesCsv,
                     templateCultura = templateAtual,
+                    configRendimento = configRendimento,
+                    onAbrirConfigRendimento = { mostrarDialogConfigRendimento = true },
                     onAbrirConfigVariaveis = { mostrarTelaConfigEnsaio = true },
                     onEditarCaixas = { reg ->
                         if (reg.uri != Uri.EMPTY) {
@@ -1488,7 +1604,7 @@ fun BreedAIApp() {
                         }
                     },
                     onAtualizarDadosRegistro = { atualizado ->
-                        val idx = listaRegistros.indexOfFirst { it.idCompleto == atualizado.idCompleto }
+                        val idx = listaRegistros.indexOfFirst { it.idCompleto.equals(atualizado.idCompleto, ignoreCase = true) }
                         if (idx >= 0) {
                             listaRegistros[idx] = atualizado
                             PersistenciaLocalRegistros.salvarRegistros(context, listaRegistros)
@@ -1568,6 +1684,8 @@ fun TelaInicioPassoAPasso(
     totalRegistros: Int,
     totalPontosFormulario: Int,
     pontosColetadosFormulario: Int = 0,
+    rendimentoResumoTexto: String? = null,
+    onAbrirConfigRendimento: () -> Unit = {},
     modelConfig: ModelConfig,
     variaveisAtivas: List<VariavelExtra>,
     todasVariaveis: List<VariavelExtra>,
@@ -1800,6 +1918,37 @@ fun TelaInicioPassoAPasso(
                                 color = Color(0xFF69F0AE),
                                 trackColor = Color.White.copy(alpha = 0.20f)
                             )
+                        }
+
+                        if (!rendimentoResumoTexto.isNullOrBlank()) {
+                            Surface(
+                                onClick = onAbrirConfigRendimento,
+                                color = Color.White.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        "Rendimento estimado: $rendimentoResumoTexto",
+                                        color = Color(0xFFFFE082),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        "Ajustar",
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -2193,7 +2342,10 @@ fun TelaFormularioFieldBook(
     onCarregarExemploClick: () -> Unit = {},
     classificacoesPersonalizadas: List<String>? = null,
     onAtualizarClassificacoes: ((List<String>) -> Unit)? = null,
-    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA
+    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA,
+    configRendimento: ConfigConversaoRendimento = ConfigConversaoRendimento(),
+    gpsAtivo: Boolean = false,
+    onAbrirConfigRendimento: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -2246,11 +2398,7 @@ fun TelaFormularioFieldBook(
         if (fotoParaRevisao != null) fotoParaRevisao = null else cameraAtiva = false
     }
 
-    val imageCapture = remember {
-        ImageCapture.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            .build()
-    }
+    val imageCapture = remember { criarImageCaptureBreedAI() }
 
     val (detectorHelper, detectorSecundarioHelper) = remember(modelConfig) {
         criarParDetectoresBreedAI(context, modelConfig)
@@ -2360,6 +2508,29 @@ fun TelaFormularioFieldBook(
             modoSemFrutos = situacaoAtual == SituacaoPlanta.SEM_FRUTOS,
             classificacoesPersonalizadas = classificacoesPersonalizadas,
             onAtualizarClassificacoes = onAtualizarClassificacoes,
+            configRendimento = configRendimento,
+            mostrarBotaoProximaFoto = variaveisAtivas.isEmpty() && indiceAtual < pontos.size - 1,
+            onConfirmarEProximaFoto = { totalObj, caixasNovas ->
+                onRegistrarPonto(
+                    fotoParaRevisao!!,
+                    pontoAtual,
+                    situacaoAtual,
+                    motivoAtual,
+                    totalObj,
+                    valoresExtrasAtual.toMap(),
+                    caixasNovas
+                )
+                fotoParaRevisao = null
+                caixasCapturadas = emptyList()
+                situacaoAtual = SituacaoPlanta.NORMAL
+                if (indiceAtual < pontos.size - 1) {
+                    indiceAtual++
+                    cameraAtiva = true
+                } else {
+                    cameraAtiva = false
+                    Toast.makeText(context, "Rota Finalizada!", Toast.LENGTH_SHORT).show()
+                }
+            },
             onConfirmar = { totalObj, caixasNovas ->
                 onRegistrarPonto(
                     fotoParaRevisao!!,
@@ -2487,6 +2658,14 @@ fun TelaFormularioFieldBook(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            FaixaAcumuladoRendimentoColeta(
+                registros = registrosSalvos,
+                configRendimento = configRendimento,
+                templateCultura = templateCultura,
+                gpsAtivo = gpsAtivo,
+                onEditarRendimento = onAbrirConfigRendimento
+            )
+
             val coletadasCount = remember(pontos) { pontos.count { it.coletado } }
             val progressoRota = if (pontos.isNotEmpty()) coletadasCount.toFloat() / pontos.size.toFloat() else 0f
 
@@ -2803,7 +2982,10 @@ fun TelaColetaLivreFieldBook(
     onDesativarTodas: (() -> Unit)? = null,
     classificacoesPersonalizadas: List<String>? = null,
     onAtualizarClassificacoes: ((List<String>) -> Unit)? = null,
-    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA
+    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA,
+    configRendimento: ConfigConversaoRendimento = ConfigConversaoRendimento(),
+    gpsAtivo: Boolean = false,
+    onAbrirConfigRendimento: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -2832,11 +3014,7 @@ fun TelaColetaLivreFieldBook(
         if (fotoParaRevisao != null) fotoParaRevisao = null else cameraAtiva = false
     }
 
-    val imageCapture = remember {
-        ImageCapture.Builder()
-            .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-            .build()
-    }
+    val imageCapture = remember { criarImageCaptureBreedAI() }
 
     val (detectorHelper, detectorSecundarioHelper) = remember(modelConfig) {
         criarParDetectoresBreedAI(context, modelConfig)
@@ -2897,6 +3075,8 @@ fun TelaColetaLivreFieldBook(
             modoSemFrutos = situacaoAtual == SituacaoPlanta.SEM_FRUTOS,
             classificacoesPersonalizadas = classificacoesPersonalizadas,
             onAtualizarClassificacoes = onAtualizarClassificacoes,
+            configRendimento = configRendimento,
+            mostrarBotaoProximaFoto = variaveisAtivas.isEmpty() && isNum3 && autoAvancarPlanta,
             onConfirmar = { totalObj, caixasNovas ->
                 onSalvarColeta(
                     fotoParaRevisao!!,
@@ -2913,6 +3093,24 @@ fun TelaColetaLivreFieldBook(
                 cameraAtiva = false
                 situacaoAtual = SituacaoPlanta.NORMAL
                 valoresExtras.clear()
+            },
+            onConfirmarEProximaFoto = { totalObj, caixasNovas ->
+                onSalvarColeta(
+                    fotoParaRevisao!!,
+                    tratVal,
+                    pVal,
+                    plVal,
+                    situacaoAtual,
+                    motivoAtual,
+                    totalObj,
+                    valoresExtras.toMap(),
+                    caixasNovas
+                )
+                fotoParaRevisao = null
+                caixasCapturadas = emptyList()
+                situacaoAtual = SituacaoPlanta.NORMAL
+                valoresExtras.clear()
+                cameraAtiva = true
             },
             onRefazer = { fotoParaRevisao = null }
         )
@@ -2951,6 +3149,14 @@ fun TelaColetaLivreFieldBook(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            FaixaAcumuladoRendimentoColeta(
+                registros = registrosSalvos,
+                configRendimento = configRendimento,
+                templateCultura = templateCultura,
+                gpsAtivo = gpsAtivo,
+                onEditarRendimento = onAbrirConfigRendimento
+            )
+
             // Card 1: Identificação no Ensaio
             ElevatedCard(
                 colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
@@ -3037,8 +3243,8 @@ fun TelaColetaLivreFieldBook(
 
                     val sugestoes = remember(tratamento, historicoTratamentos.toList()) {
                         val b = tratamento.trim()
-                        if (b.isBlank()) historicoTratamentos.take(25)
-                        else historicoTratamentos.filter { it.contains(b, ignoreCase = true) }.take(25)
+                        if (b.isBlank()) historicoTratamentos.take(12)
+                        else historicoTratamentos.filter { it.contains(b, ignoreCase = true) }.take(12)
                     }
 
                     ExposedDropdownMenuBox(
@@ -3049,12 +3255,9 @@ fun TelaColetaLivreFieldBook(
                     ) {
                         OutlinedTextField(
                             value = tratamento,
-                            onValueChange = {
-                                onTratamentoChange(it)
-                                menuTratamentosExpandido = sugestoes.isNotEmpty()
-                            },
+                            onValueChange = { onTratamentoChange(it) },
                             label = { Text(label1) },
-                            placeholder = { Text("Ex: Genótipo A, Clone CCN-51, T-01") },
+                            placeholder = { Text("Ex: Tratamento 01, Genótipo A, Talhão Norte") },
                             singleLine = true,
                             modifier = Modifier
                                 .fillMaxWidth()

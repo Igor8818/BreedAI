@@ -42,6 +42,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.myapplication.data.ConfigConversaoRendimento
+import com.example.myapplication.data.calcularEstimativaPlanta
+import com.example.myapplication.data.formatarEstimativaCurta
 import com.example.myapplication.userinterface.util.ObjectDetectorHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -499,6 +502,9 @@ fun TelaRevisaoCaptura(
     modoSemFrutos: Boolean = false,
     classificacoesPersonalizadas: List<String>? = null,
     onAtualizarClassificacoes: ((List<String>) -> Unit)? = null,
+    configRendimento: ConfigConversaoRendimento? = null,
+    mostrarBotaoProximaFoto: Boolean = false,
+    onConfirmarEProximaFoto: ((totalObjetos: Int, caixas: List<CaixaAuditavel>) -> Unit)? = null,
     onConfirmar: (totalObjetos: Int, caixas: List<CaixaAuditavel>) -> Unit,
     onRefazer: () -> Unit
 ) {
@@ -711,6 +717,9 @@ fun TelaRevisaoCaptura(
                         )
                         caixas.clear()
                         caixas.addAll(fundidas)
+                        if (indiceSelecionado !in caixas.indices) {
+                            indiceSelecionado = -1
+                        }
                     }
                 }
             } finally {
@@ -1403,6 +1412,23 @@ fun TelaRevisaoCaptura(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             ChipResumo("Total", totalObjetos, Color(0xFF00E676))
+                            if (configRendimento != null && configRendimento.ativo && totalObjetos > 0) {
+                                val estPlanta = calcularEstimativaPlanta(totalObjetos, caixas, configRendimento)
+                                val sym = configRendimento.unidadeSimbolo.trim().ifBlank { "unid" }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFFFFD54F).copy(alpha = 0.16f),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFD54F).copy(alpha = 0.50f))
+                                ) {
+                                    Text(
+                                        "≈ ${formatarEstimativaCurta(estPlanta.unidadesComerciais, sym)} (${formatarEstimativaCurta(estPlanta.kgEstimado, "kg")})",
+                                        color = Color(0xFFFFE082),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp,
+                                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
                             if (exibirPorClasse && contagemPorClasse.isNotEmpty()) {
                                 contagemPorClasse.forEach { (rotuloFriendly, qtd) ->
                                     ChipResumo(rotuloFriendly, qtd, corParaLabel(rotuloFriendly, manual = false))
@@ -1428,50 +1454,103 @@ fun TelaRevisaoCaptura(
 
                     Spacer(Modifier.height(6.dp))
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onRefazer,
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 52.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                    if (mostrarBotaoProximaFoto && onConfirmarEProximaFoto != null && !modoSemFrutos) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.Refresh, null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Refazer", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            OutlinedButton(
+                                onClick = onRefazer,
+                                modifier = Modifier.heightIn(min = 52.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, "Refazer foto", modifier = Modifier.size(18.dp))
+                            }
+                            OutlinedButton(
+                                onClick = { onConfirmar(totalObjetos, caixas.toList()) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 52.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFA5D6A7)),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF66BB6A)),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+                            ) {
+                                Text(
+                                    "Salvar ($totalObjetos)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Button(
+                                onClick = { onConfirmarEProximaFoto(totalObjetos, caixas.toList()) },
+                                modifier = Modifier
+                                    .weight(1.25f)
+                                    .heightIn(min = 52.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                            ) {
+                                Text(
+                                    "Salvar + Próx. →",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-
-                        Button(
-                            onClick = {
-                                if (modoSemFrutos) {
-                                    onConfirmar(0, emptyList())
-                                } else {
-                                    onConfirmar(totalObjetos, caixas.toList())
-                                }
-                            },
-                            modifier = Modifier
-                                .weight(1.45f)
-                                .heightIn(min = 52.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (modoSemFrutos) Color(0xFFEF6C00) else Color(0xFF2E7D32)
-                            ),
-                            shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                if (modoSemFrutos) "Confirmar sem frutos (0)" else "Salvar contagem ($totalObjetos)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            OutlinedButton(
+                                onClick = onRefazer,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 52.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Refazer", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (modoSemFrutos) {
+                                        onConfirmar(0, emptyList())
+                                    } else {
+                                        onConfirmar(totalObjetos, caixas.toList())
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1.45f)
+                                    .heightIn(min = 52.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (modoSemFrutos) Color(0xFFEF6C00) else Color(0xFF2E7D32)
+                                ),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)
+                            ) {
+                                Icon(Icons.Default.CheckCircle, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    if (modoSemFrutos) "Confirmar sem frutos (0)" else "Salvar contagem ($totalObjetos)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }

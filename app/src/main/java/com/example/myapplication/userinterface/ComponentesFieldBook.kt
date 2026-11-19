@@ -1,8 +1,12 @@
 package com.example.myapplication.userinterface
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.ImageCapture
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -26,13 +30,21 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.example.myapplication.data.ConfigConversaoRendimento
 import com.example.myapplication.data.MOTIVOS_NAO_AVALIAVEL
 import com.example.myapplication.data.ModelConfig
+import com.example.myapplication.data.PresetRendimento
+import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
+import com.example.myapplication.data.TemplateCultura
 import com.example.myapplication.data.TipoVariavelExtra
 import com.example.myapplication.data.VariavelExtra
+import com.example.myapplication.data.calcularRendimentoColeta
+import com.example.myapplication.data.formatarEstimativaCurta
 import com.example.myapplication.userinterface.util.BoundingBoxOverlay
 import com.example.myapplication.userinterface.util.CameraWithAI
 import com.example.myapplication.userinterface.util.ObjectDetectorHelper
@@ -42,6 +54,14 @@ import org.tensorflow.lite.task.vision.detector.Detection
 import java.util.Locale
 
 private val VERDE_PRINCIPAL = Color(0xFF2E7D32)
+
+/**
+ * Ponte leve para disparo da câmera pelo botão físico de volume sem acoplar Activity às telas Compose.
+ */
+object VolumeShutterBridge {
+    @Volatile
+    var onShutter: (() -> Boolean)? = null
+}
 
 fun criarDetectorHelperBreedAI(
     context: Context,
@@ -179,6 +199,68 @@ fun CameraFullscreenBreedAI(
     onCancelar: () -> Unit,
     onFotoCapturada: (Uri, List<Detection>, Float, Float) -> Unit
 ) {
+    var temPermissaoCamera by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val launcherPermissaoCam = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { concedida ->
+        temPermissaoCamera = concedida
+    }
+
+    if (!temPermissaoCamera) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF0E1810))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            ElevatedCard(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(Icons.Default.PhotoCamera, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(44.dp))
+                    Text(
+                        "Permissão de câmera necessária",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp,
+                        color = Color(0xFF1B5E20)
+                    )
+                    Text(
+                        "Para detectar frutos e objetos ao vivo no campo, libere o acesso à câmera do aparelho.",
+                        fontSize = 13.sp,
+                        color = Color(0xFF4E6E52)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onCancelar,
+                            modifier = Modifier.weight(1f).height(48.dp)
+                        ) { Text("Voltar") }
+                        Button(
+                            onClick = { launcherPermissaoCam.launch(Manifest.permission.CAMERA) },
+                            modifier = Modifier.weight(1.3f).height(48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = VERDE_PRINCIPAL)
+                        ) { Text("Permitir câmera", fontWeight = FontWeight.Bold) }
+                    }
+                }
+            }
+        }
+        return
+    }
+
     // Mantém estado dentro de MutableState sem lê-lo neste Composable pai para evitar recompor PreviewView/CameraWithAI a cada frame
     val resultadoAtualState = remember { mutableStateOf<ObjectDetectorHelper.ResultadoDeteccao?>(null) }
     val ultimoResultadoValidoState = remember { mutableStateOf<ObjectDetectorHelper.ResultadoDeteccao?>(null) }
@@ -188,9 +270,12 @@ fun CameraFullscreenBreedAI(
     var lanternaAtiva by remember { mutableStateOf(false) }
     var suportaLanterna by remember { mutableStateOf(false) }
     var zoomRatio by remember { mutableFloatStateOf(1f) }
+    var maxZoomDisponivel by remember { mutableFloatStateOf(4f) }
     var capturandoFoto by remember { mutableStateOf(false) }
     var focoPonto by remember { mutableStateOf<Offset?>(null) }
     var thresholdAoVivo by remember(modelConfig.threshold) { mutableFloatStateOf(modelConfig.threshold) }
+    var mostrarAjusteCerteza by remember(modoTesteRapido) { mutableStateOf(modoTesteRapido) }
+    var erroCameraBanner by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(focoPonto) {
         if (focoPonto != null) {
@@ -217,6 +302,27 @@ fun CameraFullscreenBreedAI(
         }
     }
 
+    val aoDispararFoto: (List<Detection>, Float, Float) -> Unit = { listaFiltrada, frameWidth, frameHeight ->
+        if (!capturandoFoto) {
+            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+            capturandoFoto = true
+            val snapshotCaixas = listaFiltrada.toList()
+            tirarFoto(
+                context = context,
+                capture = imageCapture,
+                id = idParaArquivo,
+                onErro = { msg ->
+                    capturandoFoto = false
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                },
+                onSucesso = { uri ->
+                    capturandoFoto = false
+                    onFotoCapturada(uri, snapshotCaixas, frameWidth, frameHeight)
+                }
+            )
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         CameraWithAI(
             helper = detectorHelper,
@@ -224,6 +330,9 @@ fun CameraFullscreenBreedAI(
             lanternaAtiva = lanternaAtiva,
             zoomRatio = zoomRatio,
             onSuportaLanterna = { suportaLanterna = it },
+            onZoomMaxDisponivel = { maxZoomDisponivel = it },
+            onZoomRatioChanged = { zoomRatio = it },
+            onErroCamera = { erroCameraBanner = it },
             onTapFocus = { x, y -> focoPonto = Offset(x, y) }
         ) { res ->
             resultadoAtualState.value = res
@@ -240,13 +349,17 @@ fun CameraFullscreenBreedAI(
             tituloHud = tituloHud,
             modoSemFrutos = modoSemFrutos,
             modoTesteRapido = modoTesteRapido,
+            mostrarAjusteCerteza = mostrarAjusteCerteza,
+            onToggleAjusteCerteza = { mostrarAjusteCerteza = !mostrarAjusteCerteza },
             suportaLanterna = suportaLanterna,
             lanternaAtiva = lanternaAtiva,
             onToggleLanterna = { lanternaAtiva = !lanternaAtiva },
             zoomRatio = zoomRatio,
+            maxZoomDisponivel = maxZoomDisponivel,
             onZoomChange = { zoomRatio = it },
             capturandoFoto = capturandoFoto,
             focoPonto = focoPonto,
+            erroCameraBanner = erroCameraBanner,
             thresholdAoVivo = thresholdAoVivo,
             onThresholdSliderChange = { novo ->
                 thresholdAoVivo = novo
@@ -255,25 +368,7 @@ fun CameraFullscreenBreedAI(
             },
             filtrarDeteccoes = ::filtrarDeteccoes,
             onCancelar = onCancelar,
-            onCapturarClick = { listaFiltrada, frameWidth, frameHeight ->
-                if (capturandoFoto) return@CameraLiveOverlayAndControls
-                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                capturandoFoto = true
-                val snapshotCaixas = listaFiltrada.toList()
-                tirarFoto(
-                    context = context,
-                    capture = imageCapture,
-                    id = idParaArquivo,
-                    onErro = { msg ->
-                        capturandoFoto = false
-                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                    },
-                    onSucesso = { uri ->
-                        capturandoFoto = false
-                        onFotoCapturada(uri, snapshotCaixas, frameWidth, frameHeight)
-                    }
-                )
-            }
+            onCapturarClick = aoDispararFoto
         )
     }
 }
@@ -286,13 +381,17 @@ private fun BoxScope.CameraLiveOverlayAndControls(
     tituloHud: String,
     modoSemFrutos: Boolean,
     modoTesteRapido: Boolean,
+    mostrarAjusteCerteza: Boolean,
+    onToggleAjusteCerteza: () -> Unit,
     suportaLanterna: Boolean,
     lanternaAtiva: Boolean,
     onToggleLanterna: () -> Unit,
     zoomRatio: Float,
+    maxZoomDisponivel: Float,
     onZoomChange: (Float) -> Unit,
     capturandoFoto: Boolean,
     focoPonto: Offset?,
+    erroCameraBanner: String?,
     thresholdAoVivo: Float,
     onThresholdSliderChange: (Float) -> Unit,
     filtrarDeteccoes: (List<Detection>) -> List<Detection>,
@@ -313,6 +412,34 @@ private fun BoxScope.CameraLiveOverlayAndControls(
     val frameHeight = resultadoAtivo?.alturaImagem ?: 1f
     val listaFiltrada = remember(resultadoAtivo, modoSemFrutos, thresholdAoVivo, deteccoesAtuais) {
         filtrarDeteccoes(deteccoesAtuais)
+    }
+
+    val snapshotCapturaState = rememberUpdatedState(Triple(listaFiltrada, frameWidth, frameHeight))
+    val capturandoState = rememberUpdatedState(capturandoFoto)
+    val onCapturarState = rememberUpdatedState(onCapturarClick)
+    DisposableEffect(modoTesteRapido) {
+        if (!modoTesteRapido) {
+            VolumeShutterBridge.onShutter = {
+                if (!capturandoState.value) {
+                    val (lista, w, h) = snapshotCapturaState.value
+                    onCapturarState.value(lista, w, h)
+                }
+                true
+            }
+        }
+        onDispose {
+            VolumeShutterBridge.onShutter = null
+        }
+    }
+
+    var semDeteccaoHaTempo by remember { mutableStateOf(false) }
+    LaunchedEffect(listaFiltrada.size, modoSemFrutos, modoTesteRapido, erroCameraBanner) {
+        if (modoSemFrutos || modoTesteRapido || erroCameraBanner != null || listaFiltrada.isNotEmpty()) {
+            semDeteccaoHaTempo = false
+        } else {
+            delay(4000L)
+            semDeteccaoHaTempo = true
+        }
     }
 
     if (!modoSemFrutos) {
@@ -378,7 +505,9 @@ private fun BoxScope.CameraLiveOverlayAndControls(
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
             )
             Spacer(Modifier.width(8.dp))
             Text(
@@ -409,7 +538,43 @@ private fun BoxScope.CameraLiveOverlayAndControls(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        if (modoTesteRapido) {
+        if (!erroCameraBanner.isNullOrBlank()) {
+            Surface(
+                color = Color(0xFFE65100).copy(alpha = 0.88f),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text(
+                    erroCameraBanner,
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+        } else if (semDeteccaoHaTempo && !mostrarAjusteCerteza) {
+            Surface(
+                onClick = onToggleAjusteCerteza,
+                color = Color.Black.copy(alpha = 0.80f),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(1.dp, Color(0xFFFFB74D))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(Icons.Default.Tune, null, tint = Color(0xFFFFB74D), modifier = Modifier.size(15.dp))
+                    Text(
+                        "Nenhum item? Aproxime ou toque p/ ajustar certeza (${(thresholdAoVivo * 100).toInt()}%)",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+
+        if (mostrarAjusteCerteza) {
             Surface(
                 color = Color.Black.copy(alpha = 0.78f),
                 shape = RoundedCornerShape(14.dp),
@@ -427,12 +592,20 @@ private fun BoxScope.CameraLiveOverlayAndControls(
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
-                        Text(
-                            "${listaFiltrada.size} na tela",
-                            color = Color(0xFF00E676),
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${listaFiltrada.size} na tela",
+                                color = Color(0xFF00E676),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (!modoTesteRapido) {
+                                Spacer(Modifier.width(8.dp))
+                                IconButton(onClick = onToggleAjusteCerteza, modifier = Modifier.size(22.dp)) {
+                                    Icon(Icons.Default.Close, "Ocultar slider", tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
                     }
                     Slider(
                         value = (thresholdAoVivo * 100f).coerceIn(10f, 95f),
@@ -447,13 +620,14 @@ private fun BoxScope.CameraLiveOverlayAndControls(
             }
         }
 
-        // Atalho de Zoom 1x / 2x
+        // Atalho de Zoom + Ajuste rápido de certeza
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf(1f to "1x", 2f to "2x").forEach { (zVal, zLabel) ->
-                val ativo = kotlin.math.abs(zoomRatio - zVal) < 0.1f
+            val opcoesZoom = if (maxZoomDisponivel >= 1.5f) listOf(1f to "1x", 2f to "2x") else listOf(1f to "1x")
+            opcoesZoom.forEach { (zVal, zLabel) ->
+                val ativo = kotlin.math.abs(zoomRatio - zVal) < 0.15f
                 Surface(
                     onClick = { onZoomChange(zVal) },
                     shape = RoundedCornerShape(18.dp),
@@ -467,6 +641,43 @@ private fun BoxScope.CameraLiveOverlayAndControls(
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
                     )
+                }
+            }
+            if (zoomRatio > 1.15f && kotlin.math.abs(zoomRatio - 2f) >= 0.15f) {
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = VERDE_PRINCIPAL,
+                    border = BorderStroke(1.dp, Color(0xFF00E676))
+                ) {
+                    Text(
+                        String.format(Locale.US, "%.1fx", zoomRatio),
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+            }
+            if (!modoTesteRapido && !modoSemFrutos) {
+                Surface(
+                    onClick = onToggleAjusteCerteza,
+                    shape = RoundedCornerShape(18.dp),
+                    color = if (mostrarAjusteCerteza) VERDE_PRINCIPAL else Color.Black.copy(alpha = 0.72f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(Icons.Default.Tune, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                        Text(
+                            "${(thresholdAoVivo * 100).toInt()}%",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -500,7 +711,7 @@ private fun BoxScope.CameraLiveOverlayAndControls(
                         }
                     } else {
                         Text(
-                            if (modoSemFrutos) "Registrar sem produção (0)" else "Capturar (${listaFiltrada.size})",
+                            if (modoSemFrutos) "Registrar sem produção (0)" else "Capturar (${listaFiltrada.size}) • Vol",
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -992,6 +1203,277 @@ fun DialogGerenciarVariaveisExtras(
             ) {
                 Text("Concluído", fontWeight = FontWeight.SemiBold)
             }
+        }
+    )
+}
+
+/**
+ * Faixa compacta de progresso acumulado na coleta (frutos + rendimento aproximado em @/kg/sc) e indicador GPS.
+ */
+@Composable
+fun FaixaAcumuladoRendimentoColeta(
+    registros: List<RegistroColeta>,
+    configRendimento: ConfigConversaoRendimento,
+    templateCultura: TemplateCultura,
+    gpsAtivo: Boolean,
+    onEditarRendimento: () -> Unit
+) {
+    val rend = remember(registros.toList(), configRendimento) {
+        calcularRendimentoColeta(registros, configRendimento)
+    }
+    val totalContado = remember(registros.toList()) {
+        registros.filter { it.situacaoPlanta == SituacaoPlanta.NORMAL }.sumOf { it.totalObjetos }
+    }
+    val unidadeLbl = templateCultura.unidadePlural.lowercase(Locale.ROOT)
+
+    Surface(
+        onClick = onEditarRendimento,
+        shape = RoundedCornerShape(12.dp),
+        color = Color.White,
+        border = BorderStroke(1.dp, Color(0xFFDCE7DC)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = if (gpsAtivo) Color(0xFFE8F5E9) else Color(0xFFFFF3E0)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .background(if (gpsAtivo) VERDE_PRINCIPAL else Color(0xFFEF6C00), CircleShape)
+                    )
+                    Text(
+                        if (gpsAtivo) "GPS" else "Sem GPS",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (gpsAtivo) Color(0xFF1B5E20) else Color(0xFFE65100)
+                    )
+                }
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                val textoLinha = if (configRendimento.ativo) {
+                    val sym = configRendimento.unidadeSimbolo.trim().ifBlank { "unid" }
+                    val unidStr = formatarEstimativaCurta(rend.unidadesAcumuladas, sym)
+                    val haStr = if (registros.isNotEmpty() && configRendimento.plantasPorHa > 0) {
+                        " (~${formatarEstimativaCurta(rend.realUnidadesHa, "$sym/ha")})"
+                    } else ""
+                    "${registros.size} pl • $totalContado $unidadeLbl • ≈ $unidStr$haStr"
+                } else {
+                    "${registros.size} planta(s) salva(s) • $totalContado $unidadeLbl"
+                }
+                Text(
+                    textoLinha,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF1B5E20),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                Icon(Icons.Default.Tune, null, tint = VERDE_PRINCIPAL, modifier = Modifier.size(14.dp))
+                Text(
+                    if (configRendimento.ativo) (configRendimento.unidadeSimbolo.ifBlank { "Rend." }) else "Rend.",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = VERDE_PRINCIPAL
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun DialogConfiguracaoRendimento(
+    configAtual: ConfigConversaoRendimento,
+    onDismiss: () -> Unit,
+    onSalvar: (ConfigConversaoRendimento) -> Unit
+) {
+    var ativo by remember(configAtual) { mutableStateOf(configAtual.ativo) }
+    var presetId by remember(configAtual) { mutableStateOf(configAtual.presetId) }
+    var simboloTxt by remember(configAtual) { mutableStateOf(configAtual.unidadeSimbolo) }
+    var itensPorKgTxt by remember(configAtual) {
+        mutableStateOf(String.format(Locale.US, "%.1f", configAtual.itensPorKg).removeSuffix(".0"))
+    }
+    var gPorItemTxt by remember(configAtual) {
+        val g = 1000.0 / configAtual.itensPorKg.coerceAtLeast(0.01)
+        mutableStateOf(String.format(Locale.US, "%.0f", g))
+    }
+    var kgPorUnidTxt by remember(configAtual) {
+        mutableStateOf(String.format(Locale.US, "%.1f", configAtual.kgPorUnidade).removeSuffix(".0"))
+    }
+    var plantasHaTxt by remember(configAtual) { mutableStateOf(configAtual.plantasPorHa.toString()) }
+    var descontarDoencas by remember(configAtual) { mutableStateOf(configAtual.descontarDoencas) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Conversão de Rendimento (@ / kg)", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "Estima peso e unidades comerciais a partir da contagem de frutos. A contagem exata sempre continua visível.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF4E6E52)
+                )
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    PresetRendimento.entries.filter { it != PresetRendimento.PERSONALIZADO }.forEach { preset ->
+                        val sel = (preset == PresetRendimento.DESATIVADO && !ativo) ||
+                            (ativo && presetId == preset.id)
+                        FilterChip(
+                            selected = sel,
+                            onClick = {
+                                if (preset == PresetRendimento.DESATIVADO) {
+                                    ativo = false
+                                    presetId = preset.id
+                                } else {
+                                    ativo = true
+                                    presetId = preset.id
+                                    simboloTxt = preset.unidadeSimbolo
+                                    itensPorKgTxt = String.format(Locale.US, "%.1f", preset.itensPorKg).removeSuffix(".0")
+                                    gPorItemTxt = String.format(Locale.US, "%.0f", 1000.0 / preset.itensPorKg)
+                                    kgPorUnidTxt = String.format(Locale.US, "%.1f", preset.kgPorUnidade).removeSuffix(".0")
+                                    plantasHaTxt = preset.plantasPorHa.toString()
+                                }
+                            },
+                            label = { Text(preset.nomeExibicao, fontSize = 11.sp) }
+                        )
+                    }
+                }
+
+                if (ativo) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = itensPorKgTxt,
+                            onValueChange = { txt ->
+                                itensPorKgTxt = txt
+                                presetId = PresetRendimento.PERSONALIZADO.id
+                                val v = txt.replace(',', '.').toDoubleOrNull()
+                                if (v != null && v > 0.0) {
+                                    gPorItemTxt = String.format(Locale.US, "%.0f", 1000.0 / v)
+                                }
+                            },
+                            label = { Text("Itens / kg (IF)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = gPorItemTxt,
+                            onValueChange = { txt ->
+                                gPorItemTxt = txt
+                                presetId = PresetRendimento.PERSONALIZADO.id
+                                val g = txt.replace(',', '.').toDoubleOrNull()
+                                if (g != null && g > 0.0) {
+                                    itensPorKgTxt = String.format(Locale.US, "%.1f", 1000.0 / g).removeSuffix(".0")
+                                }
+                            },
+                            label = { Text("Peso/item (g)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = simboloTxt,
+                            onValueChange = {
+                                simboloTxt = it.take(8)
+                                presetId = PresetRendimento.PERSONALIZADO.id
+                            },
+                            label = { Text("Unidade (@, sc)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(0.9f)
+                        )
+                        OutlinedTextField(
+                            value = kgPorUnidTxt,
+                            onValueChange = {
+                                kgPorUnidTxt = it
+                                presetId = PresetRendimento.PERSONALIZADO.id
+                            },
+                            label = { Text("kg por unid.") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.weight(1.1f)
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = plantasHaTxt,
+                        onValueChange = {
+                            plantasHaTxt = it.filter { ch -> ch.isDigit() }
+                        },
+                        label = { Text("Densidade de plantio (plantas/ha)") },
+                        placeholder = { Text("Ex: 1111 para 3x3m (0 para ocultar @/ha)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Descontar frutos doentes", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF1B5E20))
+                            Text("Somente sadios contam para o @ comercial", fontSize = 11.sp, color = Color(0xFF5F6F61))
+                        }
+                        Switch(checked = descontarDoencas, onCheckedChange = { descontarDoencas = it })
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val itensKg = (itensPorKgTxt.replace(',', '.').toDoubleOrNull() ?: 22.0).coerceIn(0.1, 5000.0)
+                    val kgUnid = (kgPorUnidTxt.replace(',', '.').toDoubleOrNull() ?: 15.0).coerceIn(0.1, 10000.0)
+                    val plHa = (plantasHaTxt.toIntOrNull() ?: 0).coerceIn(0, 500000)
+                    onSalvar(
+                        ConfigConversaoRendimento(
+                            ativo = ativo,
+                            presetId = presetId,
+                            unidadeSimbolo = simboloTxt.trim().ifBlank { if (kgUnid == 1.0) "kg" else "@" },
+                            itensPorKg = itensKg,
+                            kgPorUnidade = kgUnid,
+                            plantasPorHa = plHa,
+                            descontarDoencas = descontarDoencas
+                        )
+                    )
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = VERDE_PRINCIPAL)
+            ) {
+                Text("Salvar", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancelar") }
         }
     )
 }

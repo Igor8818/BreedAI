@@ -2,13 +2,15 @@ package com.example.myapplication.userinterface.util
 
 import android.content.Context
 import android.net.Uri
-import android.util.AtomicFile
 import android.util.Log
+import androidx.core.util.AtomicFile
+import com.example.myapplication.data.ConfigConversaoRendimento
 import com.example.myapplication.data.MODELOS_EMBUTIDOS
 import com.example.myapplication.data.ModelConfig
 import com.example.myapplication.data.PontoFormulario
 import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
+import com.example.myapplication.data.TemplateCultura
 import com.example.myapplication.data.TipoVariavelExtra
 import com.example.myapplication.data.VariavelExtra
 import com.example.myapplication.data.variaveisExtrasIniciais
@@ -547,8 +549,25 @@ object PersistenciaLocalRegistros {
         val tipoNumPlanta: Boolean = true,
         val autoAvancarPlanta: Boolean = true,
         val coletaId: String = "coleta_padrao",
-        val templateId: String = "fruticultura"
-    )
+        val templateId: String = "fruticultura",
+        val rendimentoAtivo: Boolean = true,
+        val rendimentoPresetId: String = "cacau_arroba",
+        val rendimentoUnidade: String = "@",
+        val rendimentoItensPorKg: Double = 22.0,
+        val rendimentoKgPorUnidade: Double = 15.0,
+        val rendimentoPlantasPorHa: Int = 1111,
+        val rendimentoDescontarDoencas: Boolean = true
+    ) {
+        fun toConfigRendimento(): ConfigConversaoRendimento = ConfigConversaoRendimento(
+            ativo = rendimentoAtivo,
+            presetId = rendimentoPresetId,
+            unidadeSimbolo = rendimentoUnidade,
+            itensPorKg = rendimentoItensPorKg.coerceAtLeast(0.01),
+            kgPorUnidade = rendimentoKgPorUnidade.coerceAtLeast(0.01),
+            plantasPorHa = rendimentoPlantasPorHa.coerceAtLeast(0),
+            descontarDoencas = rendimentoDescontarDoencas
+        )
+    }
 
     fun salvarConfigColeta(context: Context, cfg: ConfigColetaLocal) {
         try {
@@ -564,6 +583,13 @@ object PersistenciaLocalRegistros {
                 .putBoolean("num_parcela", normalizada.tipoNumParcela)
                 .putBoolean("num_planta", normalizada.tipoNumPlanta)
                 .putBoolean("auto_avancar_planta", normalizada.autoAvancarPlanta)
+                .putBoolean("rendimento_ativo", normalizada.rendimentoAtivo)
+                .putString("rendimento_preset_id", normalizada.rendimentoPresetId)
+                .putString("rendimento_unidade", normalizada.rendimentoUnidade)
+                .putFloat("rendimento_itens_por_kg", normalizada.rendimentoItensPorKg.toFloat())
+                .putFloat("rendimento_kg_por_unid", normalizada.rendimentoKgPorUnidade.toFloat())
+                .putInt("rendimento_plantas_ha", normalizada.rendimentoPlantasPorHa)
+                .putBoolean("rendimento_descontar_doencas", normalizada.rendimentoDescontarDoencas)
                 .apply()
             salvarMetaColetaArquivo(context, normalizada)
         } catch (_: Exception) {}
@@ -578,16 +604,25 @@ object PersistenciaLocalRegistros {
             } else {
                 nomeBruto
             }
+            val tplId = prefs.getString("template_id", "fruticultura") ?: "fruticultura"
+            val fallbackRend = ConfigConversaoRendimento.paraTemplate(TemplateCultura.fromId(tplId))
             ConfigColetaLocal(
                 coletaId = safeColetaId(prefs.getString("coleta_id", "coleta_padrao") ?: "coleta_padrao"),
-                templateId = prefs.getString("template_id", "fruticultura") ?: "fruticultura",
+                templateId = tplId,
                 coletaNome = nomeLimpo,
                 labelTratamento = prefs.getString("label_tratamento", "Tratamento") ?: "Tratamento",
                 labelParcela = prefs.getString("label_parcela", "Parcela") ?: "Parcela",
                 labelPlanta = prefs.getString("label_planta", "Planta") ?: "Planta",
                 tipoNumParcela = prefs.getBoolean("num_parcela", true),
                 tipoNumPlanta = prefs.getBoolean("num_planta", true),
-                autoAvancarPlanta = prefs.getBoolean("auto_avancar_planta", true)
+                autoAvancarPlanta = prefs.getBoolean("auto_avancar_planta", true),
+                rendimentoAtivo = prefs.getBoolean("rendimento_ativo", fallbackRend.ativo),
+                rendimentoPresetId = prefs.getString("rendimento_preset_id", fallbackRend.presetId) ?: fallbackRend.presetId,
+                rendimentoUnidade = prefs.getString("rendimento_unidade", fallbackRend.unidadeSimbolo) ?: fallbackRend.unidadeSimbolo,
+                rendimentoItensPorKg = prefs.getFloat("rendimento_itens_por_kg", fallbackRend.itensPorKg.toFloat()).toDouble(),
+                rendimentoKgPorUnidade = prefs.getFloat("rendimento_kg_por_unid", fallbackRend.kgPorUnidade.toFloat()).toDouble(),
+                rendimentoPlantasPorHa = prefs.getInt("rendimento_plantas_ha", fallbackRend.plantasPorHa),
+                rendimentoDescontarDoencas = prefs.getBoolean("rendimento_descontar_doencas", fallbackRend.descontarDoencas)
             )
         } catch (_: Exception) {
             ConfigColetaLocal()
@@ -607,6 +642,13 @@ object PersistenciaLocalRegistros {
                 put("tipoNumParcela", cfg.tipoNumParcela)
                 put("tipoNumPlanta", cfg.tipoNumPlanta)
                 put("autoAvancarPlanta", cfg.autoAvancarPlanta)
+                put("rendimentoAtivo", cfg.rendimentoAtivo)
+                put("rendimentoPresetId", cfg.rendimentoPresetId)
+                put("rendimentoUnidade", cfg.rendimentoUnidade)
+                put("rendimentoItensPorKg", cfg.rendimentoItensPorKg)
+                put("rendimentoKgPorUnidade", cfg.rendimentoKgPorUnidade)
+                put("rendimentoPlantasPorHa", cfg.rendimentoPlantasPorHa)
+                put("rendimentoDescontarDoencas", cfg.rendimentoDescontarDoencas)
                 put("atualizadoEm", System.currentTimeMillis())
             }
             escreverAtomico(context, arquivoColetaRelativo(cfg.coletaId, "meta.json"), obj.toString())
@@ -617,16 +659,25 @@ object PersistenciaLocalRegistros {
         val raw = lerAtomico(context, arquivoColetaRelativo(coletaId, "meta.json")) ?: return null
         return try {
             val o = JSONObject(raw)
+            val tplId = o.optString("templateId", "fruticultura").ifBlank { "fruticultura" }
+            val fallbackRend = ConfigConversaoRendimento.paraTemplate(TemplateCultura.fromId(tplId))
             val cfg = ConfigColetaLocal(
                 coletaId = safeColetaId(o.optString("coletaId", coletaId)),
-                templateId = o.optString("templateId", "fruticultura").ifBlank { "fruticultura" },
+                templateId = tplId,
                 coletaNome = o.optString("coletaNome", "Coleta").ifBlank { "Coleta" },
                 labelTratamento = o.optString("labelTratamento", "Tratamento").ifBlank { "Tratamento" },
                 labelParcela = o.optString("labelParcela", "Parcela").ifBlank { "Parcela" },
                 labelPlanta = o.optString("labelPlanta", "Planta").ifBlank { "Planta" },
                 tipoNumParcela = o.optBoolean("tipoNumParcela", true),
                 tipoNumPlanta = o.optBoolean("tipoNumPlanta", true),
-                autoAvancarPlanta = o.optBoolean("autoAvancarPlanta", true)
+                autoAvancarPlanta = o.optBoolean("autoAvancarPlanta", true),
+                rendimentoAtivo = o.optBoolean("rendimentoAtivo", fallbackRend.ativo),
+                rendimentoPresetId = o.optString("rendimentoPresetId", fallbackRend.presetId).ifBlank { fallbackRend.presetId },
+                rendimentoUnidade = o.optString("rendimentoUnidade", fallbackRend.unidadeSimbolo),
+                rendimentoItensPorKg = o.optDouble("rendimentoItensPorKg", fallbackRend.itensPorKg).coerceAtLeast(0.01),
+                rendimentoKgPorUnidade = o.optDouble("rendimentoKgPorUnidade", fallbackRend.kgPorUnidade).coerceAtLeast(0.01),
+                rendimentoPlantasPorHa = o.optInt("rendimentoPlantasPorHa", fallbackRend.plantasPorHa).coerceAtLeast(0),
+                rendimentoDescontarDoencas = o.optBoolean("rendimentoDescontarDoencas", fallbackRend.descontarDoencas)
             )
             cfg to o.optLong("atualizadoEm", System.currentTimeMillis())
         } catch (_: Exception) {
@@ -634,14 +685,24 @@ object PersistenciaLocalRegistros {
         }
     }
 
-    fun listarColetasSalvas(context: Context): List<ResumoColetaSalva> {
+    fun listarColetasSalvas(context: Context): List<ResumoColetaSalva> =
+        listarColetasInterno(context = context, salvarAtiva = true)
+
+    private fun listarColetasInterno(
+        context: Context,
+        salvarAtiva: Boolean,
+        ignorarId: String? = null
+    ): List<ResumoColetaSalva> {
         val ativa = carregarConfigColeta(context)
-        migrarLegadoSeNecessario(context, ativa.coletaId)
-        salvarMetaColetaArquivo(context, ativa)
+        if (salvarAtiva) {
+            migrarLegadoSeNecessario(context, ativa.coletaId)
+            salvarMetaColetaArquivo(context, ativa)
+        }
 
         val dir = File(context.filesDir, DIR_COLETAS)
         if (!dir.exists() || !dir.isDirectory) return emptyList()
 
+        val ignoradoLimpo = ignorarId?.let { safeColetaId(it) }
         val ids = dir.listFiles()
             ?.mapNotNull { f ->
                 when {
@@ -650,12 +711,13 @@ object PersistenciaLocalRegistros {
                     else -> null
                 }
             }
+            ?.filter { it != ignoradoLimpo }
             ?.distinct()
             .orEmpty()
 
         return ids.mapNotNull { id ->
             val metaPar = lerMetaColetaArquivo(context, id)
-            val cfg = metaPar?.first ?: (if (id == ativa.coletaId) ativa else null) ?: return@mapNotNull null
+            val cfg = metaPar?.first ?: (if (salvarAtiva && id == ativa.coletaId) ativa else null) ?: return@mapNotNull null
             val regs = lerAtomico(context, arquivoColetaRelativo(id, "registros.json"))?.let {
                 runCatching { JSONArray(it).length() }.getOrDefault(0)
             } ?: 0
@@ -678,11 +740,14 @@ object PersistenciaLocalRegistros {
         context: Context,
         nome: String,
         templateId: String,
-        manterPlanilhaAtual: Boolean
+        manterPlanilhaAtual: Boolean,
+        salvarAtualAntes: Boolean = true
     ): ConfigColetaLocal {
         val atual = carregarConfigColeta(context)
-        migrarLegadoSeNecessario(context, atual.coletaId)
-        salvarMetaColetaArquivo(context, atual)
+        if (salvarAtualAntes) {
+            migrarLegadoSeNecessario(context, atual.coletaId)
+            salvarMetaColetaArquivo(context, atual)
+        }
 
         val formAtual = if (manterPlanilhaAtual) carregarFormulario(context).second else emptyList()
         var novoId = "col_${System.currentTimeMillis()}"
@@ -691,10 +756,19 @@ object PersistenciaLocalRegistros {
             novoId = "col_${System.currentTimeMillis()}_${(10..99).random()}"
         }
 
+        val tplIdLimpo = templateId.ifBlank { "fruticultura" }
+        val rendTemplate = ConfigConversaoRendimento.paraTemplate(TemplateCultura.fromId(tplIdLimpo))
         val novaCfg = atual.copy(
             coletaId = novoId,
-            templateId = templateId.ifBlank { "fruticultura" },
-            coletaNome = nome.trim().ifBlank { "Coleta 01" }
+            templateId = tplIdLimpo,
+            coletaNome = nome.trim().ifBlank { "Coleta 01" },
+            rendimentoAtivo = rendTemplate.ativo,
+            rendimentoPresetId = rendTemplate.presetId,
+            rendimentoUnidade = rendTemplate.unidadeSimbolo,
+            rendimentoItensPorKg = rendTemplate.itensPorKg,
+            rendimentoKgPorUnidade = rendTemplate.kgPorUnidade,
+            rendimentoPlantasPorHa = rendTemplate.plantasPorHa,
+            rendimentoDescontarDoencas = rendTemplate.descontarDoencas
         )
         salvarConfigColeta(context, novaCfg)
         escreverAtomico(context, arquivoColetaRelativo(novoId, "registros.json"), "[]")
@@ -709,9 +783,15 @@ object PersistenciaLocalRegistros {
         return novaCfg
     }
 
-    fun alternarColetaAtiva(context: Context, coletaId: String): ConfigColetaLocal? {
-        val atual = carregarConfigColeta(context)
-        salvarMetaColetaArquivo(context, atual)
+    fun alternarColetaAtiva(
+        context: Context,
+        coletaId: String,
+        salvarAtualAntes: Boolean = true
+    ): ConfigColetaLocal? {
+        if (salvarAtualAntes) {
+            val atual = carregarConfigColeta(context)
+            salvarMetaColetaArquivo(context, atual)
+        }
 
         val idLimpo = safeColetaId(coletaId)
         val meta = lerMetaColetaArquivo(context, idLimpo)?.first ?: return null
@@ -745,18 +825,24 @@ object PersistenciaLocalRegistros {
                     File(context.filesDir, "$rel.bak").delete()
                 } catch (_: Exception) {}
             }
+            if (ativa.coletaId == idLimpo) {
+                listOf(FILE_REGISTROS, "$FILE_REGISTROS.bak", FILE_FORMULARIO, "$FILE_FORMULARIO.bak").forEach { arq ->
+                    try { File(context.filesDir, arq).delete() } catch (_: Exception) {}
+                }
+            }
         }
         if (ativa.coletaId == idLimpo) {
-            val restantes = listarColetasSalvas(context)
+            val restantes = listarColetasInterno(context = context, salvarAtiva = false, ignorarId = idLimpo)
             val proximo = restantes.firstOrNull()
             if (proximo != null) {
-                alternarColetaAtiva(context, proximo.id)
+                alternarColetaAtiva(context, proximo.id, salvarAtualAntes = false)
             } else {
                 criarNovaColetaIsolada(
                     context = context,
                     nome = "Coleta Campo 01",
                     templateId = "fruticultura",
-                    manterPlanilhaAtual = false
+                    manterPlanilhaAtual = false,
+                    salvarAtualAntes = false
                 )
             }
         }
@@ -840,6 +926,7 @@ object PersistenciaLocalRegistros {
     private fun escreverAtomico(context: Context, fileName: String, conteudo: String) {
         synchronized(fileLock) {
             val baseFile = File(context.filesDir, fileName)
+            baseFile.parentFile?.mkdirs()
             val atomicFile = AtomicFile(baseFile)
             var fos: FileOutputStream? = null
             try {

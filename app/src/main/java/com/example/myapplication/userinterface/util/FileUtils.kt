@@ -6,12 +6,18 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import com.example.myapplication.data.ConfigConversaoRendimento
 import com.example.myapplication.data.PontoFormulario
 import com.example.myapplication.data.RegistroColeta
+import com.example.myapplication.data.SituacaoPlanta
 import com.example.myapplication.data.VariavelExtra
+import com.example.myapplication.data.calcularEstimativaPlanta
+import com.example.myapplication.data.calcularRankingTratamentos
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
@@ -51,6 +57,13 @@ internal fun csvField(value: Any?): String {
     }
 }
 
+private fun nomeColunaUnidadeRendimento(simbolo: String): String {
+    val limpo = simbolo.trim()
+    if (limpo == "@") return "Unid_Estimada_Arrobas"
+    val safe = limpo.replace(Regex("[^a-zA-Z0-9_]"), "")
+    return if (safe.isNotBlank()) "Unid_Estimada_$safe" else "Unid_Estimada"
+}
+
 internal fun gerarConteudoCsvBreedAI(
     registros: List<RegistroColeta>,
     labelTratamento: String,
@@ -59,7 +72,8 @@ internal fun gerarConteudoCsvBreedAI(
     variaveisAtivas: List<VariavelExtra>,
     classesModeloExportacao: List<String> = emptyList(),
     pontosFormulario: List<PontoFormulario> = emptyList(),
-    incluirPercentualClasses: Boolean = false
+    incluirPercentualClasses: Boolean = false,
+    configRendimento: ConfigConversaoRendimento? = null
 ): String = buildString {
     val classesValidas = classesModeloExportacao
         .map { it.trim() }
@@ -85,10 +99,16 @@ internal fun gerarConteudoCsvBreedAI(
     } else {
         emptyList()
     }
+    val rendimentoAtivo = configRendimento != null && configRendimento.ativo
+    val colunasRendimento = if (rendimentoAtivo) {
+        listOf("Aproveitaveis", "Kg_Estimado", nomeColunaUnidadeRendimento(configRendimento!!.unidadeSimbolo))
+    } else {
+        emptyList()
+    }
     val colunasFixasFim = listOf("Data_Hora", "Latitude", "Longitude", "Deteccoes_IA")
 
     val nomesReservados = (colunasFixasInicio + colunasFixasPosId + colunasVariaveis +
-            colunasClassesIA + colunasPctIA + colunasFixasFim)
+            colunasClassesIA + colunasPctIA + colunasRendimento + colunasFixasFim)
         .map { it.trim().lowercase(Locale.ROOT) }
         .toSet()
 
@@ -117,7 +137,7 @@ internal fun gerarConteudoCsvBreedAI(
     }
 
     val header = (colunasFixasInicio + listaColsPlanilha + colunasFixasPosId +
-            colunasVariaveis + colunasClassesIA + colunasPctIA + colunasFixasFim)
+            colunasVariaveis + colunasClassesIA + colunasPctIA + colunasRendimento + colunasFixasFim)
         .joinToString(",") { csvField(it) }
     appendLine(header)
 
@@ -162,10 +182,24 @@ internal fun gerarConteudoCsvBreedAI(
         } else {
             emptyList()
         }
+        val valoresRendimento = if (rendimentoAtivo) {
+            if (reg.situacaoPlanta == SituacaoPlanta.NORMAL) {
+                val est = calcularEstimativaPlanta(reg.totalObjetos, reg.caixas, configRendimento!!)
+                listOf(
+                    est.aproveitaveis.toString(),
+                    String.format(Locale.US, "%.2f", est.kgEstimado),
+                    String.format(Locale.US, "%.2f", est.unidadesComerciais)
+                )
+            } else {
+                listOf("0", "0.00", "0.00")
+            }
+        } else {
+            emptyList()
+        }
         val valoresFixosFim = listOf(reg.data, reg.lat, reg.lng, detJson)
 
         val linha = (valoresInicio + valoresPlanilha + valoresPosId +
-                valoresVariaveis + contagensPorClasse + valoresPctIA + valoresFixosFim)
+                valoresVariaveis + contagensPorClasse + valoresPctIA + valoresRendimento + valoresFixosFim)
             .joinToString(",") { csvField(it) }
         appendLine(linha)
     }
@@ -181,7 +215,8 @@ fun exportarCSVBreedAI(
     variaveisAtivas: List<VariavelExtra>,
     classesModeloExportacao: List<String> = emptyList(),
     pontosFormulario: List<PontoFormulario> = emptyList(),
-    incluirPercentualClasses: Boolean = false
+    incluirPercentualClasses: Boolean = false,
+    configRendimento: ConfigConversaoRendimento? = null
 ): File? {
     val coletaSafe = coletaNome.ifBlank { "Coleta" }.replace(Regex("[^a-zA-Z0-9._-]"), "_")
     val nomeFinal = "BreedAI_${coletaSafe}_${System.currentTimeMillis()}.csv"
@@ -193,7 +228,8 @@ fun exportarCSVBreedAI(
         variaveisAtivas = variaveisAtivas,
         classesModeloExportacao = classesModeloExportacao,
         pontosFormulario = pontosFormulario,
-        incluirPercentualClasses = incluirPercentualClasses
+        incluirPercentualClasses = incluirPercentualClasses,
+        configRendimento = configRendimento
     )
     val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
     val payload = bom + conteudo.toByteArray(StandardCharsets.UTF_8)
@@ -227,7 +263,8 @@ fun exportarPacoteZipBreedAI(
     variaveisAtivas: List<VariavelExtra>,
     classesModeloExportacao: List<String> = emptyList(),
     pontosFormulario: List<PontoFormulario> = emptyList(),
-    incluirPercentualClasses: Boolean = false
+    incluirPercentualClasses: Boolean = false,
+    configRendimento: ConfigConversaoRendimento? = null
 ): File? {
     return try {
         val coletaSafe = coletaNome.ifBlank { "Coleta" }.replace(Regex("[^a-zA-Z0-9._-]"), "_")
@@ -244,7 +281,8 @@ fun exportarPacoteZipBreedAI(
             variaveisAtivas = variaveisAtivas,
             classesModeloExportacao = classesModeloExportacao,
             pontosFormulario = pontosFormulario,
-            incluirPercentualClasses = incluirPercentualClasses
+            incluirPercentualClasses = incluirPercentualClasses,
+            configRendimento = configRendimento
         )
         val bom = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
         val csvBytes = bom + csvConteudo.toByteArray(StandardCharsets.UTF_8)
@@ -274,6 +312,17 @@ fun exportarPacoteZipBreedAI(
             zos.putNextEntry(ZipEntry("planilha_${coletaSafe}.csv"))
             zos.write(csvBytes)
             zos.closeEntry()
+
+            val resumoCsv = gerarResumoTratamentosCsvBreedAI(
+                registros = registros,
+                labelTratamento = labelTratamento,
+                configRendimento = configRendimento
+            )
+            if (resumoCsv.isNotBlank()) {
+                zos.putNextEntry(ZipEntry("resumo_tratamentos.csv"))
+                zos.write(bom + resumoCsv.toByteArray(StandardCharsets.UTF_8))
+                zos.closeEntry()
+            }
 
             zos.putNextEntry(ZipEntry("classes.txt"))
             zos.write(classesOrdenadas.joinToString("\n").toByteArray(StandardCharsets.UTF_8))
@@ -319,9 +368,80 @@ fun exportarPacoteZipBreedAI(
             prefixoErro = "Erro ao exportar pacote ZIP"
         )
     } catch (e: Exception) {
-        Toast.makeText(context, "Erro ao gerar pacote ZIP: ${e.message}", Toast.LENGTH_LONG).show()
+        mostrarToastSeguro(context, "Erro ao gerar pacote ZIP: ${e.message}", Toast.LENGTH_LONG)
         null
     }
+}
+
+internal fun gerarResumoTratamentosCsvBreedAI(
+    registros: List<RegistroColeta>,
+    labelTratamento: String,
+    configRendimento: ConfigConversaoRendimento? = null
+): String {
+    val ranking = calcularRankingTratamentos(
+        registros = registros,
+        config = configRendimento ?: ConfigConversaoRendimento(ativo = false)
+    )
+    if (ranking.isEmpty()) return ""
+    val rendOn = configRendimento?.ativo == true
+    val colUnid = if (rendOn) nomeColunaUnidadeRendimento(configRendimento!!.unidadeSimbolo) else ""
+    return buildString {
+        val cols = buildList {
+            add("Posicao")
+            add(labelTratamento)
+            add("Plantas")
+            add("Avaliaveis")
+            add("Estande_Pct")
+            add("Total_Contado")
+            add("Aproveitaveis")
+            add("Doentes")
+            add("Media_Aproveitaveis")
+            add("Taxa_Doenca_Pct")
+            if (rendOn) {
+                add("Kg_Estimado")
+                add(colUnid)
+                add("${colUnid}_Por_Ha")
+            }
+        }
+        appendLine(cols.joinToString(",") { csvField(it) })
+        ranking.forEachIndexed { idx, r ->
+            val itensKg = (configRendimento?.itensPorKg ?: 22.0).coerceAtLeast(0.01)
+            val kgTot = r.totalAproveitaveis.toDouble() / itensKg
+            val vals = buildList<Any> {
+                add(idx + 1)
+                add(r.tratamento)
+                add(r.totalPlantas)
+                add(r.plantasValidas)
+                add(String.format(Locale.US, "%.1f", r.estandePercentual))
+                add(r.totalObjetos)
+                add(r.totalAproveitaveis)
+                add(r.totalDoentes)
+                add(String.format(Locale.US, "%.2f", r.mediaAproveitaveis))
+                add(String.format(Locale.US, "%.1f", r.taxaDoencaPercentual))
+                if (rendOn) {
+                    add(String.format(Locale.US, "%.2f", kgTot))
+                    add(String.format(Locale.US, "%.2f", r.unidadesAcumuladas))
+                    add(String.format(Locale.US, "%.2f", r.unidadesPorHa))
+                }
+            }
+            appendLine(vals.joinToString(",") { csvField(it) })
+        }
+    }
+}
+
+private fun mostrarToastSeguro(context: Context, mensagem: String, duracao: Int) {
+    try {
+        val mainLooper = Looper.getMainLooper() ?: return
+        if (Looper.myLooper() == mainLooper) {
+            Toast.makeText(context, mensagem, duracao).show()
+        } else {
+            Handler(mainLooper).post {
+                try {
+                    Toast.makeText(context, mensagem, duracao).show()
+                } catch (_: Throwable) {}
+            }
+        }
+    } catch (_: Throwable) {}
 }
 
 private fun lerBytesUri(context: Context, uri: Uri): ByteArray? {
@@ -356,7 +476,7 @@ private fun salvarArquivoEmDownloadsBreedAI(
             val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
             if (uri != null) {
                 context.contentResolver.openOutputStream(uri)?.use { out -> out.write(payload) }
-                Toast.makeText(context, mensagemSucesso, Toast.LENGTH_SHORT).show()
+                mostrarToastSeguro(context, mensagemSucesso, Toast.LENGTH_SHORT)
                 return cacheFallback
             }
         }
@@ -365,10 +485,10 @@ private fun salvarArquivoEmDownloadsBreedAI(
         if (!downloadDir.exists()) downloadDir.mkdirs()
         val file = File(downloadDir, nomeArquivo)
         FileOutputStream(file).use { out -> out.write(payload) }
-        Toast.makeText(context, mensagemSucesso, Toast.LENGTH_SHORT).show()
+        mostrarToastSeguro(context, mensagemSucesso, Toast.LENGTH_SHORT)
         return cacheFallback ?: file
     } catch (e: Exception) {
-        Toast.makeText(context, "$prefixoErro: ${e.message}", Toast.LENGTH_LONG).show()
+        mostrarToastSeguro(context, "$prefixoErro: ${e.message}", Toast.LENGTH_LONG)
         return cacheFallback
     }
 }
@@ -388,6 +508,22 @@ fun compartilharArquivoViaAndroid(
         }
         context.startActivity(Intent.createChooser(intent, tituloChooser))
     } catch (e: Exception) {
-        Toast.makeText(context, "Erro ao compartilhar arquivo: ${e.message}", Toast.LENGTH_LONG).show()
+        mostrarToastSeguro(context, "Erro ao compartilhar arquivo: ${e.message}", Toast.LENGTH_LONG)
+    }
+}
+
+fun compartilharTextoViaAndroid(
+    context: Context,
+    texto: String,
+    tituloChooser: String
+) {
+    try {
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, texto)
+        }
+        context.startActivity(Intent.createChooser(intent, tituloChooser))
+    } catch (e: Exception) {
+        mostrarToastSeguro(context, "Erro ao compartilhar resumo: ${e.message}", Toast.LENGTH_LONG)
     }
 }

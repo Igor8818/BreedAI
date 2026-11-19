@@ -7,8 +7,6 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.AspectRatio
-import androidx.camera.core.ImageCapture
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,6 +34,7 @@ import com.example.myapplication.userinterface.util.ImportadorPlanilhaUniversal
 import com.example.myapplication.userinterface.util.ObjectDetectorHelper
 import com.example.myapplication.userinterface.util.PersistenciaLocalRegistros
 import com.example.myapplication.userinterface.util.compartilharArquivoViaAndroid
+import com.example.myapplication.userinterface.util.criarImageCaptureBreedAI
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -266,9 +265,7 @@ fun TelaConfiguracaoModelo(
     if (testandoNaCamera && podeSalvar) {
         BackHandler { testandoNaCamera = false }
         val imageCaptureTeste = remember {
-            ImageCapture.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
-                .build()
+            criarImageCaptureBreedAI()
         }
         val helperTeste = remember(
             configMontada.modeloSelecionado,
@@ -635,7 +632,7 @@ fun TelaConfiguracaoModelo(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                "Recursos especializados (Cacau CEPEC)",
+                                "Análise dupla de doenças (opcional)",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFF4E6E52)

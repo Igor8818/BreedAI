@@ -1,7 +1,9 @@
 package com.example.myapplication
 
 import android.net.Uri
+import com.example.myapplication.data.ConfigConversaoRendimento
 import com.example.myapplication.data.PontoFormulario
+import com.example.myapplication.data.PresetRendimento
 import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
 import com.example.myapplication.data.TipoVariavelExtra
@@ -249,5 +251,48 @@ class DomainConcordanceIntegrationTest {
         assertEquals(2, linhasPct.size)
         assertTrue(linhasPct[0].contains("IA_Pct_Sadio,IA_Pct_Vassoura"))
         assertTrue(linhasPct[1].contains(",3,1,75.0,25.0,"))
+    }
+
+    @Test
+    fun `testCsvExportComRendimentoAtivoIncluiColunasKgEArrobas`() {
+        val mockUri = Mockito.mock(Uri::class.java)
+        val pontos = listOf(
+            PontoFormulario(tratamento = "TRAT-01", parcela = "1", planta = "1")
+        )
+        val caixas = List(22) {
+            CaixaAuditavel(0.1f, 0.1f, 0.2f, 0.2f, rotulo = "Sadio", manual = false, confianca = 0.9f)
+        } + List(11) {
+            CaixaAuditavel(0.4f, 0.4f, 0.5f, 0.5f, rotulo = "Vassoura", manual = false, confianca = 0.85f)
+        }
+        val reg = RegistroColeta(
+            uri = mockUri,
+            idCompleto = "TRAT-01_P1_Pl1",
+            coletaNome = "Ensaio_Rend",
+            tratamento = "TRAT-01",
+            parcela = "1",
+            planta = "1",
+            situacaoPlanta = SituacaoPlanta.NORMAL,
+            diagnostico = "",
+            data = "2026-11-19 10:15:00",
+            lat = 0.0,
+            lng = 0.0,
+            totalObjetos = 33,
+            caixas = caixas
+        )
+
+        val csv = gerarConteudoCsvBreedAI(
+            registros = listOf(reg),
+            labelTratamento = "Tratamento",
+            labelParcela = "Parcela",
+            labelPlanta = "Planta",
+            variaveisAtivas = emptyList(),
+            classesModeloExportacao = listOf("Sadio", "Vassoura"),
+            pontosFormulario = pontos,
+            configRendimento = ConfigConversaoRendimento.dePreset(PresetRendimento.CACAU_ARROBA)
+        )
+        val linhas = csv.trim().lines()
+        assertEquals(2, linhas.size)
+        assertTrue(linhas[0].contains("Aproveitaveis,Kg_Estimado,Unid_Estimada_Arrobas"))
+        assertTrue(linhas[1].contains(",22,1.00,0.07,"))
     }
 }

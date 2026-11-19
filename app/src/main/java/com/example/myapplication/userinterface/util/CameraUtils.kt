@@ -1,13 +1,18 @@
 package com.example.myapplication.userinterface.util
 
+import android.Manifest
 import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import androidx.camera.core.*
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -33,12 +38,30 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.tensorflow.lite.task.vision.detector.Detection
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 // Executor dedicado — inferência nunca roda na main thread
 private val inferenceExecutor = Executors.newSingleThreadExecutor()
+
+fun criarImageCaptureBreedAI(): ImageCapture {
+    val captureResSelector = ResolutionSelector.Builder()
+        .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+        .setResolutionStrategy(
+            ResolutionStrategy(
+                Size(1600, 1200),
+                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+            )
+        )
+        .build()
+    return ImageCapture.Builder()
+        .setResolutionSelector(captureResSelector)
+        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+        .setJpegQuality(88)
+        .build()
+}
 
 @Composable
 fun CameraWithAI(
@@ -47,6 +70,9 @@ fun CameraWithAI(
     lanternaAtiva: Boolean = false,
     zoomRatio: Float = 1f,
     onSuportaLanterna: (Boolean) -> Unit = {},
+    onZoomMaxDisponivel: (Float) -> Unit = {},
+    onZoomRatioChanged: (Float) -> Unit = {},
+    onErroCamera: (String) -> Unit = {},
     onTapFocus: (Float, Float) -> Unit = { _, _ -> },
     onResultsUpdated: (ObjectDetectorHelper.ResultadoDeteccao) -> Unit
 ) {
@@ -58,6 +84,7 @@ fun CameraWithAI(
     val inferenceRunning = remember { AtomicBoolean(false) }
     val lastFinishedMs = remember { AtomicLong(0L) }
     var cameraRef by remember { mutableStateOf<Camera?>(null) }
+    var zoomMinRef by remember { mutableFloatStateOf(1f) }
     var zoomMaxRef by remember { mutableFloatStateOf(4f) }
 
     LaunchedEffect(cameraRef, lanternaAtiva) {
@@ -70,8 +97,9 @@ fun CameraWithAI(
 
     LaunchedEffect(cameraRef, zoomRatio) {
         try {
+            val zMin = cameraRef?.cameraInfo?.zoomState?.value?.minZoomRatio ?: zoomMinRef
             val zMax = cameraRef?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: zoomMaxRef
-            cameraRef?.cameraControl?.setZoomRatio(zoomRatio.coerceIn(1f, zMax.coerceAtLeast(1f)))
+            cameraRef?.cameraControl?.setZoomRatio(zoomRatio.coerceIn(zMin, zMax.coerceAtLeast(zMin)))
         } catch (_: Exception) {}
     }
 
@@ -111,49 +139,77 @@ fun CameraWithAI(
 
     androidx.compose.ui.viewinterop.AndroidView(factory = { ctx ->
         val view = PreviewView(ctx).apply {
+            keepScreenOn = true
             // Garante que o preview use FILL_CENTER mantendo proporção da imagem
             scaleType = PreviewView.ScaleType.FILL_CENTER
-            implementationMode = PreviewView.ImplementationMode.PERFORMANCE
-            setOnTouchListener { v, event ->
-                if (event.action == android.view.MotionEvent.ACTION_UP) {
-                    try {
-                        val point = meteringPointFactory.createPoint(event.x, event.y)
-                        val action = FocusMeteringAction.Builder(point).build()
-                        cameraRef?.cameraControl?.startFocusAndMetering(action)
-                    } catch (_: Exception) {}
-                    onTapFocus(event.x, event.y)
-                    v.performClick()
-                }
-                true
+            implementationMode = if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.O_MR1) {
+                PreviewView.ImplementationMode.COMPATIBLE
+            } else {
+                PreviewView.ImplementationMode.PERFORMANCE
             }
+        }
+
+        var pinchInProgress = false
+        val scaleDetector = ScaleGestureDetector(
+            ctx,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                    pinchInProgress = true
+                    return true
+                }
+
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    val cam = cameraRef ?: return false
+                    val zState = cam.cameraInfo.zoomState.value
+                    val cur = zState?.zoomRatio ?: zoomRatio
+                    val minZ = zState?.minZoomRatio ?: zoomMinRef
+                    val maxZ = zState?.maxZoomRatio ?: zoomMaxRef
+                    val novo = (cur * detector.scaleFactor).coerceIn(minZ, maxZ.coerceAtLeast(minZ))
+                    try {
+                        cam.cameraControl.setZoomRatio(novo)
+                        onZoomRatioChanged(novo)
+                    } catch (_: Exception) {}
+                    return true
+                }
+            }
+        )
+
+        view.setOnTouchListener { v, event ->
+            scaleDetector.onTouchEvent(event)
+            if (event.pointerCount <= 1 && !scaleDetector.isInProgress && !pinchInProgress &&
+                event.actionMasked == MotionEvent.ACTION_UP
+            ) {
+                try {
+                    val point = view.meteringPointFactory.createPoint(event.x, event.y)
+                    val action = FocusMeteringAction.Builder(point).build()
+                    cameraRef?.cameraControl?.startFocusAndMetering(action)
+                } catch (_: Exception) {}
+                onTapFocus(event.x, event.y)
+                v.performClick()
+            }
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                pinchInProgress = false
+            }
+            true
         }
 
         val minCooldownMs = 140L
 
-        providerFuture.addListener({
-            if (disposed.get()) return@addListener
-            val provider = providerFuture.get()
-
-            val previewResSelector = ResolutionSelector.Builder()
-                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
-                .build()
-
-            val analysisResSelector = ResolutionSelector.Builder()
-                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+        fun buildAnalyzer(targetW: Int, targetH: Int, lockAspect: Boolean): ImageAnalysis {
+            val resBuilder = ResolutionSelector.Builder()
+            if (lockAspect) {
+                resBuilder.setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+            }
+            val analysisResSelector = resBuilder
                 .setResolutionStrategy(
                     ResolutionStrategy(
-                        Size(640, 480),
+                        Size(targetW, targetH),
                         ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER
                     )
                 )
                 .build()
 
-            val preview = Preview.Builder()
-                .setResolutionSelector(previewResSelector)
-                .build()
-                .also { it.setSurfaceProvider(view.surfaceProvider) }
-
-            val analyzer = ImageAnalysis.Builder()
+            return ImageAnalysis.Builder()
                 .setResolutionSelector(analysisResSelector)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
@@ -177,8 +233,8 @@ fun CameraWithAI(
                                 // Rotaciona e aplica Letterbox em 1 único passo na matriz (zero bitmap temporário)
                                 helper.detect(rawBitmap, rotation)
                             }
-                        } catch (e: Exception) {
-                            Log.e("CameraAI", "Erro no frame: ${e.message}")
+                        } catch (t: Throwable) {
+                            Log.e("CameraAI", "Erro no frame: ${t.message}")
                             try { proxy.close() } catch (_: Exception) {}
                         } finally {
                             if (rawBitmap != null && !rawBitmap.isRecycled) {
@@ -191,22 +247,69 @@ fun CameraWithAI(
                         }
                     }
                 }
+        }
 
-            provider.unbindAll()
-            val cam = provider.bindToLifecycle(
-                lifecycleOwner,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                preview, capture, analyzer
-            )
-            cameraRef = cam
-            zoomMaxRef = cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 4f
-            val temLanterna = cam.cameraInfo.hasFlashUnit()
-            onSuportaLanterna(temLanterna)
-            if (lanternaAtiva && temLanterna) {
-                try { cam.cameraControl.enableTorch(true) } catch (_: Exception) {}
-            }
-            if (zoomRatio > 1f) {
-                try { cam.cameraControl.setZoomRatio(zoomRatio.coerceIn(1f, zoomMaxRef)) } catch (_: Exception) {}
+        providerFuture.addListener({
+            if (disposed.get()) return@addListener
+            try {
+                val provider = providerFuture.get()
+                val camSelector = when {
+                    provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA) -> CameraSelector.DEFAULT_BACK_CAMERA
+                    provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) -> CameraSelector.DEFAULT_FRONT_CAMERA
+                    else -> {
+                        onErroCamera("Nenhuma câmera disponível neste dispositivo.")
+                        return@addListener
+                    }
+                }
+
+                val previewResSelector = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                    .build()
+
+                val preview = Preview.Builder()
+                    .setResolutionSelector(previewResSelector)
+                    .build()
+                    .also { it.setSurfaceProvider(view.surfaceProvider) }
+
+                provider.unbindAll()
+                val cam: Camera = try {
+                    provider.bindToLifecycle(
+                        lifecycleOwner,
+                        camSelector,
+                        preview, capture, buildAnalyzer(640, 480, true)
+                    )
+                } catch (_: IllegalArgumentException) {
+                    provider.unbindAll()
+                    try {
+                        provider.bindToLifecycle(
+                            lifecycleOwner,
+                            camSelector,
+                            preview, capture, buildAnalyzer(480, 360, false)
+                        )
+                    } catch (_: Exception) {
+                        provider.unbindAll()
+                        val compatCam = provider.bindToLifecycle(lifecycleOwner, camSelector, preview, capture)
+                        onErroCamera("Câmera em modo compatibilidade: a IA analisará a foto após capturar.")
+                        compatCam
+                    }
+                }
+
+                cameraRef = cam
+                val zState = cam.cameraInfo.zoomState.value
+                zoomMinRef = zState?.minZoomRatio ?: 1f
+                zoomMaxRef = zState?.maxZoomRatio ?: 4f
+                onZoomMaxDisponivel(zoomMaxRef)
+                val temLanterna = cam.cameraInfo.hasFlashUnit()
+                onSuportaLanterna(temLanterna)
+                if (lanternaAtiva && temLanterna) {
+                    try { cam.cameraControl.enableTorch(true) } catch (_: Exception) {}
+                }
+                if (zoomRatio > 1f) {
+                    try { cam.cameraControl.setZoomRatio(zoomRatio.coerceIn(zoomMinRef, zoomMaxRef)) } catch (_: Exception) {}
+                }
+            } catch (t: Throwable) {
+                Log.e("CameraAI", "Falha ao abrir câmera: ${t.message}", t)
+                onErroCamera("Não foi possível iniciar a câmera neste aparelho.")
             }
         }, mainExecutor)
         view
@@ -312,6 +415,38 @@ fun BoundingBoxOverlay(
     }
 }
 
+private fun salvarFotoEmArquivoPrivado(
+    context: Context,
+    capture: ImageCapture,
+    id: String,
+    onErro: (String) -> Unit,
+    onSucesso: (Uri) -> Unit
+) {
+    try {
+        val dirBase = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir
+        val dirFotos = File(dirBase, "BreedAI_Analise").apply { mkdirs() }
+        val file = File(dirFotos, "${id}_${System.currentTimeMillis()}.jpg")
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
+        capture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(context),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    val uri = output.savedUri ?: Uri.fromFile(file)
+                    onSucesso(uri)
+                }
+
+                override fun onError(exc: ImageCaptureException) {
+                    Log.e("Camera", "Erro ao capturar no armazenamento privado: ${exc.message}")
+                    onErro(exc.message ?: "Falha ao capturar imagem.")
+                }
+            }
+        )
+    } catch (t: Throwable) {
+        onErro(t.message ?: "Falha ao salvar foto.")
+    }
+}
+
 fun tirarFoto(
     context: Context,
     capture: ImageCapture,
@@ -319,34 +454,50 @@ fun tirarFoto(
     onErro: (String) -> Unit = {},
     onSucesso: (Uri) -> Unit
 ) {
-    val name = "${id}_${System.currentTimeMillis()}.jpg"
-    val values = ContentValues().apply {
-        put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-        put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/BreedAI_Analise")
-        }
+    val podeUsarMediaStore = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+        PackageManager.PERMISSION_GRANTED
+    if (!podeUsarMediaStore) {
+        salvarFotoEmArquivoPrivado(context, capture, id, onErro, onSucesso)
+        return
     }
-    val outputOptions = ImageCapture.OutputFileOptions.Builder(
-        context.contentResolver,
-        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-        values
-    ).build()
 
-    capture.takePicture(outputOptions, ContextCompat.getMainExecutor(context),
-        object : ImageCapture.OnImageSavedCallback {
-            override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                val uri = output.savedUri
-                if (uri != null) {
-                    onSucesso(uri)
-                } else {
-                    onErro("Não foi possível obter a foto salva.")
+    try {
+        val name = "${id}_${System.currentTimeMillis()}.jpg"
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/BreedAI_Analise")
+            }
+        }
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(
+            context.contentResolver,
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            values
+        ).build()
+
+        capture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(context),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    val uri = output.savedUri
+                    if (uri != null) {
+                        onSucesso(uri)
+                    } else {
+                        salvarFotoEmArquivoPrivado(context, capture, id, onErro, onSucesso)
+                    }
+                }
+
+                override fun onError(exc: ImageCaptureException) {
+                    Log.w("Camera", "MediaStore falhou (${exc.message}), tentando armazenamento privado")
+                    salvarFotoEmArquivoPrivado(context, capture, id, onErro, onSucesso)
                 }
             }
-            override fun onError(exc: ImageCaptureException) {
-                Log.e("Camera", "Erro ao capturar: ${exc.message}")
-                onErro(exc.message ?: "Falha ao capturar imagem.")
-            }
-        }
-    )
+        )
+    } catch (t: Throwable) {
+        Log.w("Camera", "Exceção MediaStore (${t.message}), tentando armazenamento privado")
+        salvarFotoEmArquivoPrivado(context, capture, id, onErro, onSucesso)
+    }
 }

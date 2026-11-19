@@ -3,12 +3,15 @@ package com.example.myapplication.userinterface
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -26,13 +29,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.myapplication.data.ConfigConversaoRendimento
 import com.example.myapplication.data.PontoFormulario
 import com.example.myapplication.data.RegistroColeta
 import com.example.myapplication.data.SituacaoPlanta
 import com.example.myapplication.data.TemplateCultura
 import com.example.myapplication.data.VariavelExtra
+import com.example.myapplication.data.calcularEstimativaPlanta
+import com.example.myapplication.data.calcularRankingTratamentos
+import com.example.myapplication.data.calcularRendimentoColeta
 import com.example.myapplication.data.calcularResumoAgronomico
+import com.example.myapplication.data.formatarEstimativaCurta
+import com.example.myapplication.data.gerarResumoTextoColeta
 import com.example.myapplication.userinterface.util.compartilharArquivoViaAndroid
+import com.example.myapplication.userinterface.util.compartilharTextoViaAndroid
 import com.example.myapplication.userinterface.util.exportarCSVBreedAI
 import com.example.myapplication.userinterface.util.exportarPacoteZipBreedAI
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +65,9 @@ fun TelaEdicaoDados(
     classesModeloExportacao: List<String> = emptyList(),
     pontosFormulario: List<PontoFormulario> = emptyList(),
     incluirPercentualClassesCsv: Boolean = false,
-    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA
+    templateCultura: TemplateCultura = TemplateCultura.FRUTICULTURA,
+    configRendimento: ConfigConversaoRendimento = ConfigConversaoRendimento(),
+    onAbrirConfigRendimento: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -71,9 +83,17 @@ fun TelaEdicaoDados(
 
     var filtroSituacao by remember { mutableStateOf<SituacaoPlanta?>(null) }
     var textoBusca by remember { mutableStateOf("") }
+    var abaVisualizacao by remember { mutableIntStateOf(0) }
     var gerandoZip by remember { mutableStateOf(false) }
     var registroParaExcluir by remember { mutableStateOf<RegistroColeta?>(null) }
     var registroParaEditarDados by remember { mutableStateOf<RegistroColeta?>(null) }
+
+    val rendResumo = remember(registros.toList(), configRendimento) {
+        calcularRendimentoColeta(registros, configRendimento)
+    }
+    val rankingTratamentos = remember(registros.toList(), configRendimento) {
+        calcularRankingTratamentos(registros, configRendimento)
+    }
 
     val variaveisAtivas = remember(variaveisExtrasConfig) {
         variaveisExtrasConfig.filter { it.ativa }
@@ -219,11 +239,123 @@ fun TelaEdicaoDados(
                     IndicadorResumoEnsaio(titulo = "Estande", valor = estandeTexto, modifier = Modifier.weight(1f))
                 }
 
+                if (configRendimento.ativo) {
+                    val sym = configRendimento.unidadeSimbolo.trim().ifBlank { "unid" }
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFFF1F8E9),
+                        border = BorderStroke(1.dp, Color(0xFFC8E6C9)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    if (rendResumo.temClassificacaoDoenca && configRendimento.descontarDoencas) {
+                                        "Rendimento líquido estimado (sadios)"
+                                    } else {
+                                        "Rendimento estimado (${configRendimento.itensPorKg.toInt()} itens/kg)"
+                                    },
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF1B5E20),
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Surface(
+                                    onClick = onAbrirConfigRendimento,
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFFDCEDC8)
+                                ) {
+                                    Text(
+                                        "Ajustar",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF1B5E20),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        formatarEstimativaCurta(rendResumo.unidadesAcumuladas, sym),
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF1B5E20)
+                                    )
+                                    Text("Acumulado", fontSize = 10.sp, color = Color(0xFF5F6F61))
+                                }
+                                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        formatarEstimativaCurta(rendResumo.kgAcumulado, "kg"),
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF2E7D32)
+                                    )
+                                    Text("Peso seco/est.", fontSize = 10.sp, color = Color(0xFF5F6F61))
+                                }
+                                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(
+                                        if (configRendimento.plantasPorHa > 0 && registros.isNotEmpty()) {
+                                            formatarEstimativaCurta(rendResumo.realUnidadesHa, "$sym/ha")
+                                        } else "-",
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = Color(0xFF1B5E20)
+                                    )
+                                    Text("Projeção/ha", fontSize = 10.sp, color = Color(0xFF5F6F61))
+                                }
+                            }
+                            if (rendResumo.totalDoentes > 0) {
+                                Text(
+                                    "Perdas por doenças: ${rendResumo.totalDoentes} itens (~${formatarEstimativaCurta(rendResumo.unidadesPerdaDoencas, sym)})",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFFE65100)
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Surface(
+                        onClick = onAbrirConfigRendimento,
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFFF6F9F6),
+                        border = BorderStroke(1.dp, Color(0xFFDCE7DC)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Calcular @ / kg / sacas desta coleta",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF3E4E40)
+                            )
+                            Text("Configurar", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = verde)
+                        }
+                    }
+                }
+
                 HorizontalDivider(color = Color(0xFFEEF3EE))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Button(
                         onClick = {
@@ -240,19 +372,20 @@ fun TelaEdicaoDados(
                                     variaveisAtivas = variaveisAtivas,
                                     classesModeloExportacao = classesParaCsv,
                                     pontosFormulario = pontosFormulario,
-                                    incluirPercentualClasses = incluirPercentualClassesCsv
+                                    incluirPercentualClasses = incluirPercentualClassesCsv,
+                                    configRendimento = configRendimento
                                 )
                             }
                         },
                         enabled = registros.isNotEmpty() && !gerandoZip,
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 44.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = verde),
                         shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                     ) {
-                        Icon(Icons.Default.FileDownload, null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Baixar CSV", fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                        Icon(Icons.Default.FileDownload, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("CSV", fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
                     }
 
                     OutlinedButton(
@@ -267,7 +400,8 @@ fun TelaEdicaoDados(
                                 variaveisAtivas = variaveisAtivas,
                                 classesModeloExportacao = classesParaCsv,
                                 pontosFormulario = pontosFormulario,
-                                incluirPercentualClasses = incluirPercentualClassesCsv
+                                incluirPercentualClasses = incluirPercentualClassesCsv,
+                                configRendimento = configRendimento
                             )
                             if (csvFile != null) {
                                 compartilharArquivoViaAndroid(
@@ -279,14 +413,40 @@ fun TelaEdicaoDados(
                             }
                         },
                         enabled = registros.isNotEmpty() && !gerandoZip,
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = 44.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = verde),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
                     ) {
-                        Icon(Icons.Default.Share, null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Compartilhar", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, maxLines = 1)
+                        Icon(Icons.Default.Share, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Planilha", fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 1)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            val textoResumo = gerarResumoTextoColeta(
+                                coletaNome = coletaNome,
+                                labelTratamento = labelTratamento,
+                                registros = registros,
+                                config = configRendimento,
+                                templateCultura = templateCultura
+                            )
+                            compartilharTextoViaAndroid(
+                                context = context,
+                                texto = textoResumo,
+                                tituloChooser = "Enviar Resumo ($coletaNome)"
+                            )
+                        },
+                        enabled = registros.isNotEmpty() && !gerandoZip,
+                        modifier = Modifier.weight(1f).heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF1B5E20)),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.Description, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Resumo", fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 1)
                     }
                 }
 
@@ -307,7 +467,8 @@ fun TelaEdicaoDados(
                                 variaveisAtivas = variaveisAtivas,
                                 classesModeloExportacao = classesParaCsv,
                                 pontosFormulario = snapshotPontos,
-                                incluirPercentualClasses = incluirPercentualClassesCsv
+                                incluirPercentualClasses = incluirPercentualClassesCsv,
+                                configRendimento = configRendimento
                             )
                             withContext(Dispatchers.Main) {
                                 gerandoZip = false
@@ -323,11 +484,11 @@ fun TelaEdicaoDados(
                         }
                     },
                     enabled = registros.isNotEmpty() && !gerandoZip,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF1B5E20)),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     if (gerandoZip) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = verde, strokeWidth = 2.dp)
@@ -340,6 +501,159 @@ fun TelaEdicaoDados(
                     }
                 }
             }
+        }
+
+        if (registros.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFEEF3EE), RoundedCornerShape(10.dp))
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Surface(
+                    onClick = { abaVisualizacao = 0 },
+                    modifier = Modifier.weight(1f).height(34.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (abaVisualizacao == 0) verde else Color.Transparent
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            "Por Planta (${registros.size})",
+                            fontSize = 12.sp,
+                            fontWeight = if (abaVisualizacao == 0) FontWeight.Bold else FontWeight.Medium,
+                            color = if (abaVisualizacao == 0) Color.White else Color(0xFF3E4E40),
+                            maxLines = 1
+                        )
+                    }
+                }
+                Surface(
+                    onClick = { abaVisualizacao = 1 },
+                    modifier = Modifier.weight(1f).height(34.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (abaVisualizacao == 1) verde else Color.Transparent
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            "Por $labelTratamento (${rankingTratamentos.size})",
+                            fontSize = 12.sp,
+                            fontWeight = if (abaVisualizacao == 1) FontWeight.Bold else FontWeight.Medium,
+                            color = if (abaVisualizacao == 1) Color.White else Color(0xFF3E4E40),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+
+        if (abaVisualizacao == 1 && registros.isNotEmpty()) {
+            val maxMedia = (rankingTratamentos.maxOfOrNull { it.mediaAproveitaveis } ?: 1.0).coerceAtLeast(0.01)
+            val sym = configRendimento.unidadeSimbolo.trim().ifBlank { "unid" }
+            val unidadeLbl = templateCultura.unidadePlural.lowercase(Locale.ROOT)
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                itemsIndexed(rankingTratamentos, key = { _, it -> it.tratamento }) { idx, item ->
+                    ElevatedCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.elevatedCardColors(containerColor = Color.White),
+                        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 1.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (idx == 0) Color(0xFFFFD54F) else Color(0xFFE8F5E9),
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            "#${idx + 1}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color(0xFF1B5E20)
+                                        )
+                                    }
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        item.tratamento,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        color = Color(0xFF1B5E20),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "${item.totalPlantas} pl • Estande ${item.estandePercentual.toInt()}% • ${item.totalAproveitaveis} aproveitáveis",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF5F6F61),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Text(
+                                    "${String.format(Locale.US, "%.1f", item.mediaAproveitaveis).replace('.', ',')} /pl",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = verde
+                                )
+                            }
+
+                            LinearProgressIndicator(
+                                progress = { (item.mediaAproveitaveis / maxMedia).toFloat().coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                color = if (idx == 0) Color(0xFF2E7D32) else Color(0xFF66BB6A),
+                                trackColor = Color(0xFFEEF3EE)
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (configRendimento.ativo) {
+                                    val unidStr = formatarEstimativaCurta(item.unidadesAcumuladas, sym)
+                                    val haStr = if (configRendimento.plantasPorHa > 0) {
+                                        " • ${formatarEstimativaCurta(item.unidadesPorHa, "$sym/ha")}"
+                                    } else ""
+                                    Text(
+                                        "≈ $unidStr$haStr",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF1B5E20)
+                                    )
+                                } else {
+                                    Text(
+                                        "Total: ${item.totalObjetos} $unidadeLbl",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF5F6F61)
+                                    )
+                                }
+                                if (item.totalDoentes > 0) {
+                                    Text(
+                                        "Doenças: ${item.taxaDoencaPercentual.toInt()}%",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFE65100)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return@Column
         }
 
         if (registros.isNotEmpty()) {
@@ -456,7 +770,16 @@ fun TelaEdicaoDados(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 val resumoSituacao = when (reg.situacaoPlanta) {
-                                    SituacaoPlanta.NORMAL -> "✓ ${reg.totalObjetos} ${templateCultura.unidadePlural.lowercase(Locale.ROOT)}"
+                                    SituacaoPlanta.NORMAL -> {
+                                        val baseCont = "✓ ${reg.totalObjetos} ${templateCultura.unidadePlural.lowercase(Locale.ROOT)}"
+                                        if (configRendimento.ativo && reg.totalObjetos > 0) {
+                                            val est = calcularEstimativaPlanta(reg.totalObjetos, reg.caixas, configRendimento)
+                                            val sym = configRendimento.unidadeSimbolo.trim().ifBlank { "unid" }
+                                            "$baseCont • ≈ ${formatarEstimativaCurta(est.unidadesComerciais, sym)}"
+                                        } else {
+                                            baseCont
+                                        }
+                                    }
                                     SituacaoPlanta.SEM_FRUTOS -> "${templateCultura.rotuloSemUnidades} (0)"
                                     SituacaoPlanta.NAO_AVALIAVEL -> "Não aval.: ${reg.motivoNaoAvaliavel}"
                                 }
