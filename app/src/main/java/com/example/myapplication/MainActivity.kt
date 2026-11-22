@@ -27,6 +27,8 @@ import androidx.compose.foundation.verticalScroll
 import com.example.myapplication.ui.theme.BreedAITheme
 import com.example.myapplication.userinterface.util.exportarCSVBreedAI
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -420,7 +422,13 @@ fun BreedAIApp() {
             mostrarTutorialPrimeiraVez = true
         }
 
-        launcherPermissoes.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_FINE_LOCATION))
+        launcherPermissoes.launch(
+            arrayOf(
+                Manifest.permission.CAMERA,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
     }
 
     // ── DIÁLOGOS GLOBAIS ──
@@ -961,7 +969,7 @@ fun BreedAIApp() {
                         title = { Text("Configurações da coleta", fontWeight = FontWeight.Bold, fontSize = 17.sp) },
                         navigationIcon = {
                             IconButton(onClick = { mostrarTelaConfigEnsaio = false }) {
-                                Icon(Icons.Default.ArrowBack, "Voltar")
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Voltar")
                             }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -1187,7 +1195,7 @@ fun BreedAIApp() {
                                 }
                             }
                             IconButton(onClick = { mostrarTutorialPrimeiraVez = true }) {
-                                Icon(Icons.Default.HelpOutline, "Tutorial rápido", tint = VERDE_APP)
+                                Icon(Icons.AutoMirrored.Filled.HelpOutline, "Tutorial rápido", tint = VERDE_APP)
                             }
                             IconButton(onClick = { mostrarTelaConfigEnsaio = true }) {
                                 Icon(Icons.Default.Tune, "Configurações da coleta", tint = VERDE_APP)
@@ -2296,7 +2304,7 @@ fun TelaInicioPassoAPasso(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             TextButton(onClick = onAbrirTutorial) {
-                Icon(Icons.Default.HelpOutline, null, modifier = Modifier.size(15.dp), tint = VERDE_APP)
+                Icon(Icons.AutoMirrored.Filled.HelpOutline, null, modifier = Modifier.size(15.dp), tint = VERDE_APP)
                 Spacer(Modifier.width(4.dp))
                 Text("Tutorial rápido", fontSize = 12.sp, color = VERDE_APP)
             }

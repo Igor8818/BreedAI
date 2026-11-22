@@ -52,7 +52,6 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite:2.16.1") {
         exclude(group = "org.tensorflow", module = "tensorflow-lite-support-api")
     }
-    implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
     implementation("com.google.android.gms:play-services-location:21.2.0")
 
     implementation(libs.androidx.core.ktx)

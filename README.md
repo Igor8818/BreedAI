@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/Android-SDK%2024%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android SDK 24+" />
   <img src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
   <img src="https://img.shields.io/badge/TensorFlow%20Lite-Universal%20YOLO-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white" alt="TensorFlow Lite Universal YOLO" />
-  <img src="https://img.shields.io/badge/Tests-31%20Passed-25A162?style=for-the-badge&logo=junit5&logoColor=white" alt="31 Unit Tests Passing" />
+  <img src="https://img.shields.io/badge/Tests-82%20Passed-25A162?style=for-the-badge&logo=junit5&logoColor=white" alt="82 Unit Tests Passing" />
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-0D6E4E?style=for-the-badge" alt="MIT License" />
   </a>
@@ -40,8 +40,8 @@ Plataforma Android nativa **100% standalone, offline-first e independente de ser
         <br/><sub>Tema verde agronômico, contadores simétricos Parcela/Planta e Traits</sub>
       </td>
       <td align="center" width="33%">
-        <b>Menu Lateral do Ensaio</b><br/><br/>
-        <img src="docs/assets/screen_menu_lateral.png" width="230" alt="Menu Lateral BreedAI" />
+        <b>Gestão do Ensaio e Coletas</b><br/><br/>
+        <img src="docs/assets/screen_menu_lateral.png" width="230" alt="Gestão do Ensaio BreedAI" />
         <br/><sub>Acesso rápido ao ensaio ativo, rotas .xlsx/.csv, Traits e modelo IA</sub>
       </td>
       <td align="center" width="33%">
@@ -104,11 +104,11 @@ flowchart TD
 ## ✨ Funcionalidades Principais
 
 ### 1. UX Agronômica Inspirada no Field Book (`BreedAITheme`)
-* **Menu Lateral (`ModalNavigationDrawer`) + Barra Superior Limpa + `NavigationBar` Inferior (4 Abas):**
-  * **Livre *(tela inicial)*:** Foco em velocidade no campo com contadores simétricos para **Parcela** e **Planta** (sinalizando plantas já avaliadas), autocompletar de **Tratamento / Genótipo**, estado fenotípico (`Normal`, `Sem Frutos`, `Não Avaliável`), **Variáveis Fenotípicas (Traits)** e botões diretos para **Galeria** ou **Fotografar Planta**.
-  * **Rota (`N`):** Card de navegação sequencial (`◀` / `▶`) planta a planta a partir da planilha `.xlsx`/`.csv`, com barra de progresso em tempo real.
-  * **Dados (`N`):** Painel de resumo (**Plantas**, **Total Contado**, **Média**), filtros rápidos por situação, edição de Traits, reabertura da revisão visual de caixas na foto e exportação/compartilhamento de CSV.
-  * **Modelo IA:** Seleção de modelos pré-carregados, **Modo Combinado (2 IAs)**, importação permanente de `.tflite` ou pacotes `.zip` e ajuste fino de confiança mínima e classes.
+* **TopAppBar Limpa + `NavigationBar` Inferior (4 Abas):**
+  * **Início:** Painel da coleta ativa, gestão de múltiplas coletas isoladas, escolha do perfil de cultura, atalhos para rendimento e anotações extras.
+  * **Coletar (Modo Rota / Modo Livre):** Alterna entre navegação sequencial planta a planta a partir de planilhas `.xlsx`/`.csv` e coleta livre rápida com contadores simétricos de **Parcela**/**Planta**, autocompletar de **Tratamento**, estado fenotípico (`Normal`, `Sem Frutos`, `Não Avaliável`) e câmera IA / galeria.
+  * **Dados:** Painel de resumo (**Plantas**, **Total**, **Média vivas**, **Estande**), ranking por tratamento, filtros por situação, revisão visual de caixas e exportação de CSV, resumo em texto e pacote ZIP.
+  * **Modelo IA:** Seleção de modelos pré-carregados, **Modo Combinado (2 IAs)**, importação permanente de `.tflite` ou pacotes `.zip`, teste ao vivo na câmera e ajuste fino de confiança mínima e classes.
 
 ### 2. Motor Universal YOLO / TFLite (`ObjectDetectorHelper.kt`)
 * **Multi-Arquitetura Automática:** Decodifica tensores padrão **YOLOv5 / YOLOv8 / YOLOv11** (`[1, C, N]` e `[1, N, C]`), **YOLO End-to-End NMS (`[1, N, 6]`: YOLOv10 / YOLO26)** e modelos **SSD MobileNet**.
@@ -130,6 +130,10 @@ flowchart TD
 ### 6. Prontidão Google Play & Privacidade Offline
 * Regras ProGuard/R8 configuradas em [`app/proguard-rules.pro`](app/proguard-rules.pro) para builds release com TensorFlow Lite, CameraX e classes de domínio.
 * Diálogo informativo transparente confirmando **processamento 100% local no aparelho**, sem envio de fotos para servidores externos.
+
+### 7. Conversão de Rendimento & Ranking
+* **Presets Comerciais Multi-Cultura:** Converte automaticamente contagens de campo para arrobas (`@` de 15 kg), sacas (`sc` de 60 kg), caixas (`cx` de 20 kg), peso puro (`kg`) ou parâmetros personalizados, com desconto opcional de frutos doentes e projeção por hectare ponderada pelo estande.
+* **Ranking & Pacote Completo ZIP:** Classifica tratamentos por média aproveitável, gera resumo compartilhável em texto e empacota em `.zip` a planilha principal, `resumo_tratamentos.csv`, `classes.txt`, fotos originais e rótulos no formato YOLO.
 
 ---
 
@@ -162,11 +166,11 @@ app/src/main/java/com/example/myapplication/
 | Camada | Tecnologias |
 | :--- | :--- |
 | **Linguagem & SDK** | Kotlin `2.0.21`, Android SDK (`minSdk 24`, `targetSdk 36`, AGP `9.0.0`, Gradle `9.1.0`) |
-| **UI & Navegação** | Jetpack Compose, Material Design 3 (`BreedAITheme`), `ModalNavigationDrawer`, `NavigationBar`, Coil `2.6.0` |
-| **Câmera & Visão Computacional** | CameraX `1.5.3`, TensorFlow Lite `2.16.1` (+ GPU Delegate), YOLO Universal (`FLOAT32` / `UINT8` / `INT8`) |
+| **UI & Navegação** | Jetpack Compose, Material Design 3 (`BreedAITheme`), `TopAppBar`, `NavigationBar` (4 abas), Coil `2.6.0` |
+| **Câmera & Visão Computacional** | CameraX `1.5.3`, TensorFlow Lite `2.16.1` (CPU + XNNPACK), YOLO Universal (`FLOAT32` / `UINT8` / `INT8`) |
 | **Planilhas & Persistência** | `SAXParserFactory` + `ZipInputStream` (`.xlsx`), `AtomicFile`, JSON nativo Android |
 | **Hardware & Localização** | Google Play Services Location `21.2.0` (`FusedLocationProviderClient`), EXIF orientation |
-| **Qualidade & Release** | JUnit 4 (**31 testes unitários**), Mockito `5.11.0`, ProGuard/R8 rules, GitHub Actions CI |
+| **Qualidade & Release** | JUnit 4 (**82 testes unitários**), Mockito `5.11.0`, ProGuard/R8 rules, GitHub Actions CI |
 
 ---
 
@@ -188,17 +192,19 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 
 ---
 
-## 🧪 Suíte de Testes Automatizados (**31 Testes Unitários**)
+## 🧪 Suíte de Testes Automatizados (**82 Testes Unitários**)
 
 Todos os testes executam na JVM via `./gradlew testDebugUnitTest` sem necessidade de emulador:
 
 | Suíte de Teste | Quantidade | Cobertura |
 | :--- | :---: | :--- |
+| `ComprehensivePersistenceImportAndAITest` | 11 | Multi-coletas isoladas, parser `.xlsx` completo, integridade `TFL3`, YAML/TXT, revisão geométrica e `VolumeShutterBridge` |
+| `ComprehensiveYieldAndExportTest` | 16 | Templates e presets de rendimento, estande, ranking por tratamento, resumo de texto, CSV e pacote ZIP em background |
 | `CsvParsingUnitTest` | 4 | Parser nativo `.xlsx` (ZIP+SAX), CSV UTF-8 BOM / Windows-1252 e auto-detecção de delimitadores |
-| `LetterboxAndGeometryUnitTest` | 9 | Letterbox isomórfico, projeção inversa, IoU, snapping geométrico e redimensionamento de caixas |
-| `ModelAndStateUnitTest` | 8 | Ordem padrão multi-cultura, isolamento da heurística de cacau (`isModeloDoencaCacau`), manifesto `.zip` e estados agronômicos |
-| `YoloDetectionAndScaleUnitTest` | 9 | Decodificação YOLO / `End2End NMS [1,N,6]`, `nmsMultiClasse`, metadados Ultralytics e fusão de modelos |
-| `DomainConcordanceIntegrationTest` | 1 | Fluxo completo offline: coleta + variáveis extras + revisão -> JSON -> CSV dinâmico |
+| `DomainConcordanceIntegrationTest` | 4 | Fluxo completo offline -> JSON -> CSV dinâmico com colunas da planilha, rendimento (`@`/kg) e percentuais opcionais |
+| `LetterboxAndGeometryUnitTest` | 12 | Letterbox isomórfico, projeção inversa, IoU, snapping geométrico, alças de canto e redimensionamento de caixas |
+| `ModelAndStateUnitTest` | 19 | Modelos embutidos, isolamento da heurística de cacau (`isModeloDoencaCacau`), manifesto `.zip`, rendimento e ranking |
+| `YoloDetectionAndScaleUnitTest` | 16 | Decodificação YOLO / `End2End NMS [1,N,6]` / EfficientDet 2-out, `nmsMultiClasse`, metadados Ultralytics e fusão de modelos |
 
 ---
 

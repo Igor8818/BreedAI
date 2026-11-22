@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -955,7 +956,7 @@ fun TelaConfiguracaoModelo(
                                 border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = verde)
                             ) {
-                                Icon(Icons.Default.PlaylistAddCheck, null, modifier = Modifier.size(16.dp))
+                                Icon(Icons.AutoMirrored.Filled.PlaylistAddCheck, null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(6.dp))
                                 Text("Confirmar classes selecionadas na planilha", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                             }

@@ -246,7 +246,7 @@ fun exportarCSVBreedAI(
         context = context,
         nomeArquivo = nomeFinal,
         mimeType = "text/csv",
-        payload = payload,
+        escreverConteudo = { out -> out.write(payload) },
         cacheFallback = exportCacheFile,
         mensagemSucesso = "Planilha salva em Downloads/BreedAI!",
         prefixoErro = "Erro ao exportar CSV"
@@ -348,10 +348,9 @@ fun exportarPacoteZipBreedAI(
                 }
 
                 if (reg.uri != Uri.EMPTY) {
-                    val fotoBytes = lerBytesUri(context, reg.uri)
-                    if (fotoBytes != null && fotoBytes.isNotEmpty()) {
+                    abrirInputStreamUri(context, reg.uri)?.use { input ->
                         zos.putNextEntry(ZipEntry("fotos/${baseId}.jpg"))
-                        zos.write(fotoBytes)
+                        input.copyTo(zos)
                         zos.closeEntry()
                     }
                 }
@@ -362,7 +361,7 @@ fun exportarPacoteZipBreedAI(
             context = context,
             nomeArquivo = nomeZip,
             mimeType = "application/zip",
-            payload = zipFile.readBytes(),
+            escreverConteudo = { out -> zipFile.inputStream().use { it.copyTo(out) } },
             cacheFallback = zipFile,
             mensagemSucesso = "Pacote ZIP salvo em Downloads/BreedAI!",
             prefixoErro = "Erro ao exportar pacote ZIP"
@@ -444,24 +443,15 @@ private fun mostrarToastSeguro(context: Context, mensagem: String, duracao: Int)
     } catch (_: Throwable) {}
 }
 
-private fun lerBytesUri(context: Context, uri: Uri): ByteArray? {
-    return try {
-        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: uri.path?.let { p -> File(p).takeIf { it.exists() }?.readBytes() }
-    } catch (_: Exception) {
-        try {
-            uri.path?.let { p -> File(p).takeIf { it.exists() }?.readBytes() }
-        } catch (_: Exception) {
-            null
-        }
-    }
-}
+private fun abrirInputStreamUri(context: Context, uri: Uri): java.io.InputStream? =
+    try { context.contentResolver.openInputStream(uri) } catch (_: Exception) { null }
+        ?: try { uri.path?.let { p -> File(p).takeIf { it.exists() }?.inputStream() } } catch (_: Exception) { null }
 
 private fun salvarArquivoEmDownloadsBreedAI(
     context: Context,
     nomeArquivo: String,
     mimeType: String,
-    payload: ByteArray,
+    escreverConteudo: (java.io.OutputStream) -> Unit,
     cacheFallback: File?,
     mensagemSucesso: String,
     prefixoErro: String
@@ -475,7 +465,7 @@ private fun salvarArquivoEmDownloadsBreedAI(
             }
             val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
             if (uri != null) {
-                context.contentResolver.openOutputStream(uri)?.use { out -> out.write(payload) }
+                context.contentResolver.openOutputStream(uri)?.use { out -> escreverConteudo(out) }
                 mostrarToastSeguro(context, mensagemSucesso, Toast.LENGTH_SHORT)
                 return cacheFallback
             }
@@ -484,7 +474,7 @@ private fun salvarArquivoEmDownloadsBreedAI(
         val downloadDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "BreedAI")
         if (!downloadDir.exists()) downloadDir.mkdirs()
         val file = File(downloadDir, nomeArquivo)
-        FileOutputStream(file).use { out -> out.write(payload) }
+        FileOutputStream(file).use { out -> escreverConteudo(out) }
         mostrarToastSeguro(context, mensagemSucesso, Toast.LENGTH_SHORT)
         return cacheFallback ?: file
     } catch (e: Exception) {

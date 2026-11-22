@@ -85,6 +85,7 @@ fun TelaEdicaoDados(
     var textoBusca by remember { mutableStateOf("") }
     var abaVisualizacao by remember { mutableIntStateOf(0) }
     var gerandoZip by remember { mutableStateOf(false) }
+    var exportandoCsv by remember { mutableStateOf(false) }
     var registroParaExcluir by remember { mutableStateOf<RegistroColeta?>(null) }
     var registroParaEditarDados by remember { mutableStateOf<RegistroColeta?>(null) }
 
@@ -140,7 +141,13 @@ fun TelaEdicaoDados(
             mutableStateMapOf<String, String>().apply { putAll(reg.variaveisExtras) }
         }
         var situacaoEdit by remember(reg) { mutableStateOf(reg.situacaoPlanta) }
-        var motivoEdit by remember(reg) { mutableStateOf(reg.motivoNaoAvaliavel.ifBlank { "Pequena" }) }
+        var motivoEdit by remember(reg) {
+            mutableStateOf(
+                reg.motivoNaoAvaliavel.ifBlank {
+                    templateCultura.motivosSugeridos.firstOrNull() ?: "Pequena"
+                }
+            )
+        }
         val exigeFotoAusente = reg.uri == Uri.EMPTY && situacaoEdit != SituacaoPlanta.NAO_AVALIAVEL
 
         AlertDialog(
@@ -182,18 +189,21 @@ fun TelaEdicaoDados(
                     enabled = !exigeFotoAusente,
                     onClick = {
                         val zerar = situacaoEdit != SituacaoPlanta.NORMAL
-                        val diagNovo = when (situacaoEdit) {
-                            SituacaoPlanta.NORMAL -> reg.totalObjetos.toString()
-                            SituacaoPlanta.SEM_FRUTOS -> "Sem Frutos (0)"
-                            SituacaoPlanta.NAO_AVALIAVEL -> "Não avaliável ($motivoEdit)"
-                        }
+                        val totalFinal = if (zerar) 0 else reg.totalObjetos
+                        val caixasFinais = if (zerar) emptyList() else reg.caixas
+                        val diagNovo = com.example.myapplication.formatarDiagnosticoRegistro(
+                            situacao = situacaoEdit,
+                            motivoNaoAval = motivoEdit,
+                            totalObjetos = totalFinal,
+                            caixas = caixasFinais
+                        )
                         onAtualizarDadosRegistro(
                             reg.copy(
                                 situacaoPlanta = situacaoEdit,
                                 motivoNaoAvaliavel = if (situacaoEdit == SituacaoPlanta.NAO_AVALIAVEL) motivoEdit else "",
                                 diagnostico = diagNovo,
-                                totalObjetos = if (zerar) 0 else reg.totalObjetos,
-                                caixas = if (zerar) emptyList() else reg.caixas,
+                                totalObjetos = totalFinal,
+                                caixas = caixasFinais,
                                 variaveisExtras = mapaExtrasEdit.toMap()
                             )
                         )
@@ -361,23 +371,34 @@ fun TelaEdicaoDados(
                         onClick = {
                             if (registros.isEmpty()) {
                                 Toast.makeText(context, "Nenhum registro para exportar.", Toast.LENGTH_SHORT).show()
-                            } else {
-                                exportarCSVBreedAI(
-                                    context = context,
-                                    registros = registros,
-                                    coletaNome = coletaNome,
-                                    labelTratamento = labelTratamento,
-                                    labelParcela = labelParcela,
-                                    labelPlanta = labelPlanta,
-                                    variaveisAtivas = variaveisAtivas,
-                                    classesModeloExportacao = classesParaCsv,
-                                    pontosFormulario = pontosFormulario,
-                                    incluirPercentualClasses = incluirPercentualClassesCsv,
-                                    configRendimento = configRendimento
-                                )
+                            } else if (!exportandoCsv && !gerandoZip) {
+                                exportandoCsv = true
+                                val snapshotRegs = registros.toList()
+                                val snapshotPontos = pontosFormulario.toList()
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    try {
+                                        exportarCSVBreedAI(
+                                            context = context,
+                                            registros = snapshotRegs,
+                                            coletaNome = coletaNome,
+                                            labelTratamento = labelTratamento,
+                                            labelParcela = labelParcela,
+                                            labelPlanta = labelPlanta,
+                                            variaveisAtivas = variaveisAtivas,
+                                            classesModeloExportacao = classesParaCsv,
+                                            pontosFormulario = snapshotPontos,
+                                            incluirPercentualClasses = incluirPercentualClassesCsv,
+                                            configRendimento = configRendimento
+                                        )
+                                    } finally {
+                                        withContext(Dispatchers.Main) {
+                                            exportandoCsv = false
+                                        }
+                                    }
+                                }
                             }
                         },
-                        enabled = registros.isNotEmpty() && !gerandoZip,
+                        enabled = registros.isNotEmpty() && !gerandoZip && !exportandoCsv,
                         modifier = Modifier.weight(1f).heightIn(min = 44.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = verde),
                         shape = RoundedCornerShape(12.dp),
@@ -390,29 +411,43 @@ fun TelaEdicaoDados(
 
                     OutlinedButton(
                         onClick = {
-                            val csvFile = exportarCSVBreedAI(
-                                context = context,
-                                registros = registros,
-                                coletaNome = coletaNome,
-                                labelTratamento = labelTratamento,
-                                labelParcela = labelParcela,
-                                labelPlanta = labelPlanta,
-                                variaveisAtivas = variaveisAtivas,
-                                classesModeloExportacao = classesParaCsv,
-                                pontosFormulario = pontosFormulario,
-                                incluirPercentualClasses = incluirPercentualClassesCsv,
-                                configRendimento = configRendimento
-                            )
-                            if (csvFile != null) {
-                                compartilharArquivoViaAndroid(
-                                    context = context,
-                                    arquivo = csvFile,
-                                    mimeType = "text/csv",
-                                    tituloChooser = "Compartilhar Planilha CSV ($coletaNome)"
-                                )
+                            if (registros.isEmpty() || exportandoCsv || gerandoZip) return@OutlinedButton
+                            exportandoCsv = true
+                            val snapshotRegs = registros.toList()
+                            val snapshotPontos = pontosFormulario.toList()
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val csvFile = try {
+                                    exportarCSVBreedAI(
+                                        context = context,
+                                        registros = snapshotRegs,
+                                        coletaNome = coletaNome,
+                                        labelTratamento = labelTratamento,
+                                        labelParcela = labelParcela,
+                                        labelPlanta = labelPlanta,
+                                        variaveisAtivas = variaveisAtivas,
+                                        classesModeloExportacao = classesParaCsv,
+                                        pontosFormulario = snapshotPontos,
+                                        incluirPercentualClasses = incluirPercentualClassesCsv,
+                                        configRendimento = configRendimento
+                                    )
+                                } finally {
+                                    withContext(Dispatchers.Main) {
+                                        exportandoCsv = false
+                                    }
+                                }
+                                if (csvFile != null) {
+                                    withContext(Dispatchers.Main) {
+                                        compartilharArquivoViaAndroid(
+                                            context = context,
+                                            arquivo = csvFile,
+                                            mimeType = "text/csv",
+                                            tituloChooser = "Compartilhar Planilha CSV ($coletaNome)"
+                                        )
+                                    }
+                                }
                             }
                         },
-                        enabled = registros.isNotEmpty() && !gerandoZip,
+                        enabled = registros.isNotEmpty() && !gerandoZip && !exportandoCsv,
                         modifier = Modifier.weight(1f).heightIn(min = 44.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = verde),
@@ -438,7 +473,7 @@ fun TelaEdicaoDados(
                                 tituloChooser = "Enviar Resumo ($coletaNome)"
                             )
                         },
-                        enabled = registros.isNotEmpty() && !gerandoZip,
+                        enabled = registros.isNotEmpty() && !gerandoZip && !exportandoCsv,
                         modifier = Modifier.weight(1f).heightIn(min = 44.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF1B5E20)),
@@ -452,7 +487,7 @@ fun TelaEdicaoDados(
 
                 OutlinedButton(
                     onClick = {
-                        if (registros.isEmpty() || gerandoZip) return@OutlinedButton
+                        if (registros.isEmpty() || gerandoZip || exportandoCsv) return@OutlinedButton
                         gerandoZip = true
                         val snapshotRegs = registros.toList()
                         val snapshotPontos = pontosFormulario.toList()
@@ -483,7 +518,7 @@ fun TelaEdicaoDados(
                             }
                         }
                     },
-                    enabled = registros.isNotEmpty() && !gerandoZip,
+                    enabled = registros.isNotEmpty() && !gerandoZip && !exportandoCsv,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 42.dp),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, Color(0xFFB8CBB8)),
