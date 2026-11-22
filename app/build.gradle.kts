@@ -7,7 +7,7 @@ android {
     aaptOptions {
         noCompress("tflite")
     }
-    namespace = "com.example.myapplication"
+    namespace = "com.igor.breedai"
     compileSdk {
         version = release(36)
     }

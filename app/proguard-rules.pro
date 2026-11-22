@@ -25,6 +25,7 @@
 -keep class org.tensorflow.lite.task.** { *; }
 
 -keep class androidx.camera.** { *; }
--keep class com.example.myapplication.data.** { *; }
--keep class com.example.myapplication.userinterface.CaixaAuditavel { *; }
--keep class com.example.myapplication.userinterface.util.PersistenciaLocalRegistros$* { *; }
+-keep class com.igor.breedai.data.** { *; }
+-keep class com.igor.breedai.viewmodel.** { *; }
+-keep class com.igor.breedai.userinterface.CaixaAuditavel { *; }
+-keep class com.igor.breedai.userinterface.util.PersistenciaLocalRegistros$* { *; }

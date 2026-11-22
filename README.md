@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/Android-SDK%2024%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android SDK 24+" />
   <img src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
   <img src="https://img.shields.io/badge/TensorFlow%20Lite-Universal%20YOLO-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white" alt="TensorFlow Lite Universal YOLO" />
-  <img src="https://img.shields.io/badge/Tests-82%20Passed-25A162?style=for-the-badge&logo=junit5&logoColor=white" alt="82 Unit Tests Passing" />
+  <img src="https://img.shields.io/badge/Tests-85%20Passed-25A162?style=for-the-badge&logo=junit5&logoColor=white" alt="85 Unit Tests Passing" />
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-0D6E4E?style=for-the-badge" alt="MIT License" />
   </a>
@@ -140,22 +140,29 @@ flowchart TD
 ## 📁 Estrutura do Projeto
 
 ```text
-app/src/main/java/com/example/myapplication/
-├── MainActivity.kt                              # BreedAITheme, Drawer, TopAppBar, NavigationBar, Rota e Coleta Livre
+app/src/main/java/com/igor/breedai/
+├── MainActivity.kt                              # Shell principal, TopAppBar, NavigationBar e orquestração da UI
 ├── data/
 │   ├── ModelConfig.kt                           # Catálogo de modelos embutidos, manifesto .zip e labels
 │   ├── PontoFormulario.kt                       # Entidade de linha da planilha de campo
-│   └── RegistroColeta.kt                        # Entidades RegistroColeta, SituacaoPlanta e VariavelExtra
+│   └── RegistroColeta.kt                        # Entidades RegistroColeta, SituacaoPlanta, Rendimento e VariavelExtra
+├── ui/theme/                                    # BreedAITheme (cores, tipografia e Material 3)
+├── viewmodel/
+│   └── BreedAIViewModel.kt                      # MVVM ViewModel + StateFlow (BreedAIUiState) e reconciliação
 └── userinterface/
-    ├── ComponentesFieldBook.kt                  # Câmera fullscreen, Estado Fenotípico e Variáveis (Traits)
+    ├── ComponentesFieldBook.kt                  # Câmera fullscreen, Estado Fenotípico, Rendimento e Traits
+    ├── TelaInicioPassoAPasso.kt                 # Hub inicial, multi-coletas e atalhos do ensaio
+    ├── TelaFormularioFieldBook.kt               # Modo Rota sequencial guiado por planilha .xlsx/.csv
+    ├── TelaColetaLivreFieldBook.kt              # Coleta Livre rápida com contadores simétricos
+    ├── TelaConfiguracaoEnsaio.kt                # Configuração de ensaio, campos fixos e gestão de variáveis
     ├── TelaConfiguracaoModelo.kt                # Seleção de modelos, modo combinado, importação e exportação .zip
-    ├── TelaEdicaoDados.kt                       # Resumo do ensaio, filtros, revisão e exportação CSV
+    ├── TelaEdicaoDados.kt                       # Resumo, ranking por tratamento, revisão e exportação CSV/ZIP
     ├── TelaRevisaoCaptura.kt                    # Auditoria geométrica pós-foto (snap, toque, resize e reclassificação)
     └── util/
         ├── ObjectDetectorHelper.kt              # Engine universal TFLite (Letterbox, YOLO/End2End/INT8, NMS multi-classe)
         ├── ImportadorPlanilhaUniversal.kt       # Parser offline nativo para .xlsx (ZIP+SAX) e .csv/.tsv
         ├── PersistenciaLocalRegistros.kt        # Armazenamento atômico JSON e SharedPreferences
-        ├── FileUtils.kt                         # Exportação CSV dinâmica UTF-8 BOM + FileProvider
+        ├── FileUtils.kt                         # Exportação CSV UTF-8 BOM, ZIP via streaming e FileProvider
         └── CameraUtils.kt                       # Pipeline CameraX 4:3, EXIF e BoundingBoxOverlay
 ```
 
@@ -170,7 +177,7 @@ app/src/main/java/com/example/myapplication/
 | **Câmera & Visão Computacional** | CameraX `1.5.3`, TensorFlow Lite `2.16.1` (CPU + XNNPACK), YOLO Universal (`FLOAT32` / `UINT8` / `INT8`) |
 | **Planilhas & Persistência** | `SAXParserFactory` + `ZipInputStream` (`.xlsx`), `AtomicFile`, JSON nativo Android |
 | **Hardware & Localização** | Google Play Services Location `21.2.0` (`FusedLocationProviderClient`), EXIF orientation |
-| **Qualidade & Release** | JUnit 4 (**82 testes unitários**), Mockito `5.11.0`, ProGuard/R8 rules, GitHub Actions CI |
+| **Qualidade & Release** | JUnit 4 (**85 testes unitários**), Mockito `5.11.0`, ProGuard/R8 rules, GitHub Actions CI |
 
 ---
 
@@ -192,12 +199,13 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 
 ---
 
-## 🧪 Suíte de Testes Automatizados (**82 Testes Unitários**)
+## 🧪 Suíte de Testes Automatizados (**85 Testes Unitários**)
 
 Todos os testes executam na JVM via `./gradlew testDebugUnitTest` sem necessidade de emulador:
 
 | Suíte de Teste | Quantidade | Cobertura |
 | :--- | :---: | :--- |
+| `BreedAIViewModelUnitTest` | 3 | Reconciliação de rota, propriedades computadas de `BreedAIUiState` e transições de situação |
 | `ComprehensivePersistenceImportAndAITest` | 11 | Multi-coletas isoladas, parser `.xlsx` completo, integridade `TFL3`, YAML/TXT, revisão geométrica e `VolumeShutterBridge` |
 | `ComprehensiveYieldAndExportTest` | 16 | Templates e presets de rendimento, estande, ranking por tratamento, resumo de texto, CSV e pacote ZIP em background |
 | `CsvParsingUnitTest` | 4 | Parser nativo `.xlsx` (ZIP+SAX), CSV UTF-8 BOM / Windows-1252 e auto-detecção de delimitadores |
