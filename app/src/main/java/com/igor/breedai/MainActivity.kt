@@ -637,14 +637,9 @@ fun BreedAIApp(viewModel: BreedAIViewModel) {
     // ── MODO DE REVISÃO DE REGISTRO DA EDIÇÃO DOS DADOS ──
     if (registroParaEdicao != null) {
         val reg = registroParaEdicao!!
-        val (detectorHelperRevisao, detectorSecundarioRevisao) = remember(modelConfig) {
-            criarParDetectoresBreedAI(context, modelConfig)
-        }
-        DisposableEffect(detectorHelperRevisao, detectorSecundarioRevisao) {
-            onDispose {
-                detectorHelperRevisao.fechar()
-                detectorSecundarioRevisao?.fechar()
-            }
+        val classesRevisao = remember(classificacoesAtivasModelo, modelConfig, reg.caixas) {
+            classificacoesAtivasModelo?.takeIf { it.isNotEmpty() }
+                ?: resolverClassesFallbackRevisao(modelConfig, reg.caixas)
         }
         BackHandler { registroParaEdicao = null }
 
@@ -654,12 +649,12 @@ fun BreedAIApp(viewModel: BreedAIViewModel) {
             deteccoesIniciais = emptyList(),
             bitmapWidthRef = 1f,
             bitmapHeightRef = 1f,
-            detectorHelper = detectorHelperRevisao,
-            detectorSecundarioHelper = detectorSecundarioRevisao,
+            detectorHelper = null,
+            detectorSecundarioHelper = null,
             labelsFiltro = modelConfig.labelsFiltro,
             caixasAuditadasIniciais = reg.caixas,
             modoSemFrutos = reg.situacaoPlanta == SituacaoPlanta.SEM_FRUTOS,
-            classificacoesPersonalizadas = classificacoesAtivasModelo,
+            classificacoesPersonalizadas = classesRevisao,
             configRendimento = configRendimento,
             onAtualizarClassificacoes = { novasCls -> viewModel.atualizarClassificacoesAtivas(novasCls) },
             onConfirmar = { totalObj, caixasNovas ->

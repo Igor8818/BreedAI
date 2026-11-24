@@ -21,6 +21,7 @@ import com.igor.breedai.userinterface.CaixaAuditavel
 import com.igor.breedai.userinterface.DetEstilizada
 import com.igor.breedai.userinterface.deveUsarParDetectoresSecundario
 import com.igor.breedai.userinterface.fundirContagemEDiagnosticoBreedAI
+import com.igor.breedai.userinterface.resolverClassesFallbackRevisao
 import com.igor.breedai.userinterface.rotuloPassaFiltroModelo
 import com.igor.breedai.userinterface.util.ImportadorPlanilhaUniversal
 import com.igor.breedai.userinterface.util.ObjectDetectorHelper
@@ -643,5 +644,30 @@ class ModelAndStateUnitTest {
         assertTrue(texto.contains("@/ha"))
         assertTrue(texto.contains("Perdas por doenças: 5"))
         assertTrue(texto.contains("1. T-B: 40,0"))
+    }
+
+    @Test
+    fun `testResolverClassesFallbackRevisao_SemCarregarTFLiteNaAbaDados`() {
+        val cfgSimples = ModelConfig(
+            modeloSelecionado = MODELOS_EMBUTIDOS[0],
+            labelsFiltro = listOf("cacau", "fruto"),
+            usarModeloSecundario = false
+        )
+        assertEquals(listOf("cacau", "fruto"), resolverClassesFallbackRevisao(cfgSimples))
+
+        val cfgCombinado = ModelConfig(
+            modeloSelecionado = MODELOS_EMBUTIDOS[0],
+            labelsFiltro = listOf("cacau", "fruto"),
+            usarModeloSecundario = true
+        )
+        assertEquals(LABELS_DOENCA_CACAU, resolverClassesFallbackRevisao(cfgCombinado))
+
+        val caixasCustom = listOf(
+            CaixaAuditavel(0.1f, 0.1f, 0.2f, 0.2f, rotulo = "CloneEspecial", manual = true)
+        )
+        assertEquals(
+            listOf("CloneEspecial"),
+            resolverClassesFallbackRevisao(cfgSimples, caixasCustom)
+        )
     }
 }

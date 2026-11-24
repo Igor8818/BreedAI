@@ -43,8 +43,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
-// Executor dedicado — inferência nunca roda na main thread
-private val inferenceExecutor = Executors.newSingleThreadExecutor()
+// Executor dedicado — inferência nunca roda na main thread e respeita prioridade da UI/preview
+private val inferenceExecutor = Executors.newSingleThreadExecutor { runnable ->
+    Thread(runnable, "BreedAI-Inference").apply {
+        priority = Thread.NORM_PRIORITY - 1
+        isDaemon = true
+    }
+}
 
 fun criarImageCaptureBreedAI(): ImageCapture {
     val captureResSelector = ResolutionSelector.Builder()

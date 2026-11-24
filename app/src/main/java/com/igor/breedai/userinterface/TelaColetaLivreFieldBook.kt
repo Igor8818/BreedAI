@@ -114,13 +114,17 @@ fun TelaColetaLivreFieldBook(
 
     val imageCapture = remember { criarImageCaptureBreedAI() }
 
-    val (detectorHelper, detectorSecundarioHelper) = remember(modelConfig) {
-        criarParDetectoresBreedAI(context, modelConfig)
+    val precisaDetectorPrimario = cameraAtiva || fotoParaRevisao != null
+    val detectorHelper = remember(modelConfig, precisaDetectorPrimario) {
+        if (precisaDetectorPrimario) {
+            criarDetectorPrimarioBreedAI(context, modelConfig, lazyInit = true)
+        } else {
+            null
+        }
     }
-    DisposableEffect(detectorHelper, detectorSecundarioHelper) {
+    DisposableEffect(detectorHelper) {
         onDispose {
-            detectorHelper.fechar()
-            detectorSecundarioHelper?.fechar()
+            detectorHelper?.fechar()
         }
     }
 
@@ -168,7 +172,17 @@ fun TelaColetaLivreFieldBook(
             bitmapWidthRef = bitmapWCapturado,
             bitmapHeightRef = bitmapHCapturado,
             detectorHelper = detectorHelper,
-            detectorSecundarioHelper = detectorSecundarioHelper,
+            detectorSecundarioHelper = null,
+            criarDetectorSecundarioSobDemanda = if (deveUsarParDetectoresSecundario(modelConfig)) {
+                { criarDetectorSecundarioBreedAI(context, modelConfig, lazyInit = false) }
+            } else {
+                null
+            },
+            labelsSecundarioFallback = if (deveUsarParDetectoresSecundario(modelConfig)) {
+                com.igor.breedai.data.LABELS_DOENCA_CACAU
+            } else {
+                emptyList()
+            },
             labelsFiltro = modelConfig.labelsFiltro,
             modoSemFrutos = situacaoAtual == SituacaoPlanta.SEM_FRUTOS,
             classificacoesPersonalizadas = classificacoesPersonalizadas,
@@ -215,7 +229,7 @@ fun TelaColetaLivreFieldBook(
         return
     }
 
-    if (cameraAtiva) {
+    if (cameraAtiva && detectorHelper != null) {
         CameraFullscreenBreedAI(
             context = context,
             detectorHelper = detectorHelper,

@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/Android-SDK%2024%2B-3DDC84?style=for-the-badge&logo=android&logoColor=white" alt="Android SDK 24+" />
   <img src="https://img.shields.io/badge/Jetpack%20Compose-Material%203-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
   <img src="https://img.shields.io/badge/TensorFlow%20Lite-Universal%20YOLO-FF6F00?style=for-the-badge&logo=tensorflow&logoColor=white" alt="TensorFlow Lite Universal YOLO" />
-  <img src="https://img.shields.io/badge/Tests-85%20Passed-25A162?style=for-the-badge&logo=junit5&logoColor=white" alt="85 Unit Tests Passing" />
+  <img src="https://img.shields.io/badge/Tests-87%20Passed-25A162?style=for-the-badge&logo=junit5&logoColor=white" alt="87 Unit Tests Passing" />
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-0D6E4E?style=for-the-badge" alt="MIT License" />
   </a>
@@ -177,7 +177,7 @@ app/src/main/java/com/igor/breedai/
 | **Câmera & Visão Computacional** | CameraX `1.5.3`, TensorFlow Lite `2.16.1` (CPU + XNNPACK), YOLO Universal (`FLOAT32` / `UINT8` / `INT8`) |
 | **Planilhas & Persistência** | `SAXParserFactory` + `ZipInputStream` (`.xlsx`), `AtomicFile`, JSON nativo Android |
 | **Hardware & Localização** | Google Play Services Location `21.2.0` (`FusedLocationProviderClient`), EXIF orientation |
-| **Qualidade & Release** | JUnit 4 (**85 testes unitários**), Mockito `5.11.0`, ProGuard/R8 rules, GitHub Actions CI |
+| **Qualidade & Release** | JUnit 4 (**87 testes unitários**), Mockito `5.11.0`, ProGuard/R8 rules, GitHub Actions CI |
 
 ---
 
@@ -199,7 +199,7 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 
 ---
 
-## 🧪 Suíte de Testes Automatizados (**85 Testes Unitários**)
+## 🧪 Suíte de Testes Automatizados (**87 Testes Unitários**)
 
 Todos os testes executam na JVM via `./gradlew testDebugUnitTest` sem necessidade de emulador:
 
@@ -211,8 +211,8 @@ Todos os testes executam na JVM via `./gradlew testDebugUnitTest` sem necessidad
 | `CsvParsingUnitTest` | 4 | Parser nativo `.xlsx` (ZIP+SAX), CSV UTF-8 BOM / Windows-1252 e auto-detecção de delimitadores |
 | `DomainConcordanceIntegrationTest` | 4 | Fluxo completo offline -> JSON -> CSV dinâmico com colunas da planilha, rendimento (`@`/kg) e percentuais opcionais |
 | `LetterboxAndGeometryUnitTest` | 12 | Letterbox isomórfico, projeção inversa, IoU, snapping geométrico, alças de canto e redimensionamento de caixas |
-| `ModelAndStateUnitTest` | 19 | Modelos embutidos, isolamento da heurística de cacau (`isModeloDoencaCacau`), manifesto `.zip`, rendimento e ranking |
-| `YoloDetectionAndScaleUnitTest` | 16 | Decodificação YOLO / `End2End NMS [1,N,6]` / EfficientDet 2-out, `nmsMultiClasse`, metadados Ultralytics e fusão de modelos |
+| `ModelAndStateUnitTest` | 20 | Modelos embutidos, isolamento da heurística de cacau (`isModeloDoencaCacau`), manifesto `.zip`, rendimento e ranking |
+| `YoloDetectionAndScaleUnitTest` | 17 | Decodificação YOLO / `End2End NMS [1,N,6]` / EfficientDet 2-out, `nmsMultiClasse`, metadados Ultralytics e fusão de modelos |
 
 ---
 

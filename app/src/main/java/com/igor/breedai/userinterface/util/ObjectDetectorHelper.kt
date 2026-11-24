@@ -45,7 +45,8 @@ class ObjectDetectorHelper(
     var scoreThreshold: Float = 0.30f,
     var maxResults: Int = 25,
     var defaultLabel: String = "objeto",
-    var customLabels: List<String> = emptyList()
+    var customLabels: List<String> = emptyList(),
+    private val lazyInit: Boolean = false
 ) {
     sealed class ModelSource {
         data class Asset(val fileName: String) : ModelSource()
@@ -93,6 +94,9 @@ class ObjectDetectorHelper(
     private var reusableFloatOut: Array<Array<FloatArray>>? = null
     private var reusableByteOut: Array<Array<ByteArray>>? = null
     private var reusableDeqOut: Array<FloatArray>? = null
+    private var reusableFlatOutBuf: ByteBuffer? = null
+    private var reusableFlatOutBytes: ByteArray? = null
+    private var reusableFlatOutFloats: FloatArray? = null
     private var reusableExtraOutputBuf: ByteBuffer? = null
     private val letterboxMatrix = Matrix()
     private val letterboxPaint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -125,6 +129,12 @@ class ObjectDetectorHelper(
     private var reusableRawBoxesByte: Array<Array<ByteArray>>? = null
     private var reusableRawScoresDeq: Array<FloatArray>? = null
     private var reusableRawBoxesDeq: Array<FloatArray>? = null
+    private var reusableRawScoresBuf: ByteBuffer? = null
+    private var reusableRawBoxesBuf: ByteBuffer? = null
+    private var reusableRawScoresFlatBytes: ByteArray? = null
+    private var reusableRawScoresFlatFloats: FloatArray? = null
+    private var reusableRawBoxesFlatBytes: ByteArray? = null
+    private var reusableRawBoxesFlatFloats: FloatArray? = null
 
     // Configurações para YOLO
     private var yoloNumAnchors = 8400
@@ -136,6 +146,8 @@ class ObjectDetectorHelper(
 
     // Rótulos do modelo
     private val modelLabels = mutableListOf<String>()
+    @Volatile
+    private var modelLabelsSnapshot: List<String> = emptyList()
 
     var ultimoErro: String? = null
         private set
@@ -150,7 +162,9 @@ class ObjectDetectorHelper(
     private var loadedPath: String? = null
 
     init {
-        setup()
+        if (!lazyInit) {
+            setup()
+        }
     }
 
     fun setListener(l: DetectorListener?) {
@@ -168,7 +182,11 @@ class ObjectDetectorHelper(
             maxResults = maxRes
             ultimoErro = null
             loadedPath = null
-            setup()
+            modelLabels.clear()
+            modelLabelsSnapshot = emptyList()
+            if (!lazyInit) {
+                setup()
+            }
         }
     }
 
@@ -452,11 +470,12 @@ class ObjectDetectorHelper(
         quant: org.tensorflow.lite.Tensor.QuantizationParams
     ): ByteArray? = buildQuantLutForParams(type, quant.scale, quant.zeroPoint)
 
-    fun obterLabelsModelo(): List<String> = synchronized(lock) { modelLabels.toList() }
+    fun obterLabelsModelo(): List<String> = modelLabelsSnapshot
 
     private fun extractLabelsFromModelFile(file: File) {
         modelLabels.clear()
         modelLabels.addAll(extractLabelsFromFile(file))
+        modelLabelsSnapshot = modelLabels.toList()
     }
 
     fun detect(image: Bitmap, rotationDegrees: Int = 0) {
@@ -832,91 +851,107 @@ class ObjectDetectorHelper(
         val scoresQuant = rawScoreOutputType == DataType.UINT8 || rawScoreOutputType == DataType.INT8
         val boxesQuant = rawBoxOutputType == DataType.UINT8 || rawBoxOutputType == DataType.INT8
 
-        val scoreTarget: Any
-        val scoresResult: Array<FloatArray>
-        if (scoresQuant) {
-            var bOut = reusableRawScoresByte
-            var dOut = reusableRawScoresDeq
-            if (bOut == null || dOut == null || bOut[0].size != numAnchors || bOut[0].firstOrNull()?.size != numClasses) {
-                bOut = Array(1) { Array(numAnchors) { ByteArray(numClasses) } }
-                dOut = Array(numAnchors) { FloatArray(numClasses) }
-                reusableRawScoresByte = bOut
-                reusableRawScoresDeq = dOut
-                reusableRawScoresFloat = null
-            }
-            scoreTarget = bOut
-            scoresResult = dOut
-        } else {
-            var fOut = reusableRawScoresFloat
-            if (fOut == null || fOut[0].size != numAnchors || fOut[0].firstOrNull()?.size != numClasses) {
-                fOut = Array(1) { Array(numAnchors) { FloatArray(numClasses) } }
-                reusableRawScoresFloat = fOut
-                reusableRawScoresByte = null
-                reusableRawScoresDeq = null
-            }
-            scoreTarget = fOut
-            scoresResult = fOut[0]
+        var scoresResult = reusableRawScoresDeq
+        if (scoresResult == null || scoresResult.size != numAnchors || scoresResult.firstOrNull()?.size != numClasses) {
+            scoresResult = Array(numAnchors) { FloatArray(numClasses) }
+            reusableRawScoresDeq = scoresResult
+            reusableRawScoresFloat = null
+            reusableRawScoresByte = null
         }
 
-        val boxTarget: Any
-        val boxesResult: Array<FloatArray>
-        if (boxesQuant) {
-            var bOut = reusableRawBoxesByte
-            var dOut = reusableRawBoxesDeq
-            if (bOut == null || dOut == null || bOut[0].size != numAnchors || bOut[0].firstOrNull()?.size != 4) {
-                bOut = Array(1) { Array(numAnchors) { ByteArray(4) } }
-                dOut = Array(numAnchors) { FloatArray(4) }
-                reusableRawBoxesByte = bOut
-                reusableRawBoxesDeq = dOut
-                reusableRawBoxesFloat = null
-            }
-            boxTarget = bOut
-            boxesResult = dOut
+        var boxesResult = reusableRawBoxesDeq
+        if (boxesResult == null || boxesResult.size != numAnchors || boxesResult.firstOrNull()?.size != 4) {
+            boxesResult = Array(numAnchors) { FloatArray(4) }
+            reusableRawBoxesDeq = boxesResult
+            reusableRawBoxesFloat = null
+            reusableRawBoxesByte = null
+        }
+
+        val scoreElemBytes = if (scoresQuant) 1 else 4
+        val scoreTotal = numAnchors * numClasses
+        val scoreCap = (scoreTotal * scoreElemBytes).coerceAtLeast(4)
+        var scoresBuf = reusableRawScoresBuf
+        if (scoresBuf == null || scoresBuf.capacity() != scoreCap) {
+            scoresBuf = ByteBuffer.allocateDirect(scoreCap).order(ByteOrder.nativeOrder())
+            reusableRawScoresBuf = scoresBuf
         } else {
-            var fOut = reusableRawBoxesFloat
-            if (fOut == null || fOut[0].size != numAnchors || fOut[0].firstOrNull()?.size != 4) {
-                fOut = Array(1) { Array(numAnchors) { FloatArray(4) } }
-                reusableRawBoxesFloat = fOut
-                reusableRawBoxesByte = null
-                reusableRawBoxesDeq = null
-            }
-            boxTarget = fOut
-            boxesResult = fOut[0]
+            scoresBuf.rewind()
+        }
+
+        val boxElemBytes = if (boxesQuant) 1 else 4
+        val boxTotal = numAnchors * 4
+        val boxCap = (boxTotal * boxElemBytes).coerceAtLeast(4)
+        var boxesBuf = reusableRawBoxesBuf
+        if (boxesBuf == null || boxesBuf.capacity() != boxCap) {
+            boxesBuf = ByteBuffer.allocateDirect(boxCap).order(ByteOrder.nativeOrder())
+            reusableRawBoxesBuf = boxesBuf
+        } else {
+            boxesBuf.rewind()
         }
 
         val outMap = HashMap<Int, Any>(2)
-        outMap[scoreIdx] = scoreTarget
-        outMap[boxIdx] = boxTarget
+        outMap[scoreIdx] = scoresBuf
+        outMap[boxIdx] = boxesBuf
         interp.runForMultipleInputsOutputs(arrayOf(inputBuf), outMap)
 
-        if (scoresQuant) {
-            val isUint8 = rawScoreOutputType == DataType.UINT8
-            val zp = rawScoreQuantZeroPoint
-            val scale = rawScoreQuantScale
-            val src = reusableRawScoresByte!![0]
-            for (r in 0 until numAnchors) {
-                val sr = src[r]
-                val dr = scoresResult[r]
-                for (c in 0 until numClasses) {
-                    val q = if (isUint8) (sr[c].toInt() and 0xFF) else sr[c].toInt()
-                    dr[c] = (q - zp) * scale
-                }
+        val scoreScratchBytes = if (scoresQuant) {
+            var arr = reusableRawScoresFlatBytes
+            if (arr == null || arr.size != scoreTotal) {
+                arr = ByteArray(scoreTotal)
+                reusableRawScoresFlatBytes = arr
             }
-        }
-        if (boxesQuant) {
-            val isUint8 = rawBoxOutputType == DataType.UINT8
-            val zp = rawBoxQuantZeroPoint
-            val scale = rawBoxQuantScale
-            val src = reusableRawBoxesByte!![0]
-            for (r in 0 until numAnchors) {
-                val sr = src[r]
-                val dr = boxesResult[r]
-                for (c in 0 until 4) {
-                    val q = if (isUint8) (sr[c].toInt() and 0xFF) else sr[c].toInt()
-                    dr[c] = (q - zp) * scale
-                }
+            arr
+        } else null
+        val scoreScratchFloats = if (!scoresQuant) {
+            var arr = reusableRawScoresFlatFloats
+            if (arr == null || arr.size != scoreTotal) {
+                arr = FloatArray(scoreTotal)
+                reusableRawScoresFlatFloats = arr
             }
-        }
+            arr
+        } else null
+
+        copiarSaidaPlanaParaMatriz(
+            buffer = scoresBuf,
+            dataType = rawScoreOutputType,
+            dim1 = numAnchors,
+            dim2 = numClasses,
+            dest = scoresResult,
+            quantScale = rawScoreQuantScale,
+            quantZeroPoint = rawScoreQuantZeroPoint,
+            scratchBytes = scoreScratchBytes,
+            scratchFloats = scoreScratchFloats
+        )
+
+        val boxScratchBytes = if (boxesQuant) {
+            var arr = reusableRawBoxesFlatBytes
+            if (arr == null || arr.size != boxTotal) {
+                arr = ByteArray(boxTotal)
+                reusableRawBoxesFlatBytes = arr
+            }
+            arr
+        } else null
+        val boxScratchFloats = if (!boxesQuant) {
+            var arr = reusableRawBoxesFlatFloats
+            if (arr == null || arr.size != boxTotal) {
+                arr = FloatArray(boxTotal)
+                reusableRawBoxesFlatFloats = arr
+            }
+            arr
+        } else null
+
+        copiarSaidaPlanaParaMatriz(
+            buffer = boxesBuf,
+            dataType = rawBoxOutputType,
+            dim1 = numAnchors,
+            dim2 = 4,
+            dest = boxesResult,
+            quantScale = rawBoxQuantScale,
+            quantZeroPoint = rawBoxQuantZeroPoint,
+            scratchBytes = boxScratchBytes,
+            scratchFloats = boxScratchFloats
+        )
+
         return scoresResult to boxesResult
     }
 
@@ -951,6 +986,62 @@ class ObjectDetectorHelper(
         }
 
         val isQuant = outputDataType == DataType.UINT8 || outputDataType == DataType.INT8
+        if (dim1 > 64) {
+            val total = dim1 * dim2
+            val elemBytes = if (isQuant) 1 else 4
+            val cap = (total * elemBytes).coerceAtLeast(4)
+            var flatBuf = reusableFlatOutBuf
+            if (flatBuf == null || flatBuf.capacity() != cap) {
+                flatBuf = ByteBuffer.allocateDirect(cap).order(ByteOrder.nativeOrder())
+                reusableFlatOutBuf = flatBuf
+            } else {
+                flatBuf.rewind()
+            }
+
+            var dest = reusableDeqOut
+            if (dest == null || cachedOutDim1 != dim1 || cachedOutDim2 != dim2 || cachedOutIsQuant != isQuant) {
+                dest = Array(dim1) { FloatArray(dim2) }
+                reusableDeqOut = dest
+                reusableFloatOut = null
+                reusableByteOut = null
+                cachedOutIsQuant = isQuant
+                cachedOutDim1 = dim1
+                cachedOutDim2 = dim2
+            }
+
+            execTarget(flatBuf)
+
+            val scratchBytes = if (isQuant) {
+                var arr = reusableFlatOutBytes
+                if (arr == null || arr.size != total) {
+                    arr = ByteArray(total)
+                    reusableFlatOutBytes = arr
+                }
+                arr
+            } else null
+            val scratchFloats = if (!isQuant) {
+                var arr = reusableFlatOutFloats
+                if (arr == null || arr.size != total) {
+                    arr = FloatArray(total)
+                    reusableFlatOutFloats = arr
+                }
+                arr
+            } else null
+
+            copiarSaidaPlanaParaMatriz(
+                buffer = flatBuf,
+                dataType = outputDataType,
+                dim1 = dim1,
+                dim2 = dim2,
+                dest = dest,
+                quantScale = outQuantScale,
+                quantZeroPoint = outQuantZeroPoint,
+                scratchBytes = scratchBytes,
+                scratchFloats = scratchFloats
+            )
+            return dest
+        }
+
         if (isQuant) {
             var byteOut = reusableByteOut
             var deqOut = reusableDeqOut
@@ -1106,6 +1197,8 @@ class ObjectDetectorHelper(
         interpreter?.close()
         interpreter = null
         loadedPath = null
+        modelLabels.clear()
+        modelLabelsSnapshot = emptyList()
         quantByteLut = null
         letterboxBitmap?.recycle()
         letterboxBitmap = null
@@ -1119,6 +1212,9 @@ class ObjectDetectorHelper(
         reusableFloatOut = null
         reusableByteOut = null
         reusableDeqOut = null
+        reusableFlatOutBuf = null
+        reusableFlatOutBytes = null
+        reusableFlatOutFloats = null
         reusableExtraOutputBuf = null
         cachedAnchorsW = 0
         cachedAnchorsH = 0
@@ -1129,6 +1225,12 @@ class ObjectDetectorHelper(
         reusableRawBoxesByte = null
         reusableRawScoresDeq = null
         reusableRawBoxesDeq = null
+        reusableRawScoresBuf = null
+        reusableRawBoxesBuf = null
+        reusableRawScoresFlatBytes = null
+        reusableRawScoresFlatFloats = null
+        reusableRawBoxesFlatBytes = null
+        reusableRawBoxesFlatFloats = null
     }
 
     data class ResultadoDeteccao(
@@ -1154,6 +1256,44 @@ class ObjectDetectorHelper(
     companion object {
         private val FLOAT_NORM_LUT = FloatArray(256) { it / 255f }
         val DEFAULT_4CLASS_DOENCA_LABELS = listOf("PodridaoParda", "Moniliase", "Sadio", "VassouraBruxa")
+
+        internal fun copiarSaidaPlanaParaMatriz(
+            buffer: ByteBuffer,
+            dataType: DataType,
+            dim1: Int,
+            dim2: Int,
+            dest: Array<FloatArray>,
+            quantScale: Float = 1f,
+            quantZeroPoint: Int = 0,
+            scratchBytes: ByteArray? = null,
+            scratchFloats: FloatArray? = null
+        ) {
+            if (dim1 <= 0 || dim2 <= 0) return
+            buffer.rewind()
+            val total = dim1 * dim2
+            if (dataType == DataType.UINT8 || dataType == DataType.INT8) {
+                val bytes = if (scratchBytes != null && scratchBytes.size >= total) scratchBytes else ByteArray(total)
+                buffer.get(bytes, 0, total)
+                val isUint8 = dataType == DataType.UINT8
+                var offset = 0
+                for (r in 0 until dim1) {
+                    val row = dest[r]
+                    for (c in 0 until dim2) {
+                        val b = bytes[offset++]
+                        val q = if (isUint8) (b.toInt() and 0xFF) else b.toInt()
+                        row[c] = (q - quantZeroPoint) * quantScale
+                    }
+                }
+            } else {
+                val floats = if (scratchFloats != null && scratchFloats.size >= total) scratchFloats else FloatArray(total)
+                buffer.asFloatBuffer().get(floats, 0, total)
+                var offset = 0
+                for (r in 0 until dim1) {
+                    System.arraycopy(floats, offset, dest[r], 0, dim2)
+                    offset += dim2
+                }
+            }
+        }
 
         fun isTfliteFlatBuffer(bytes: ByteArray): Boolean {
             return bytes.size >= 8 && String(bytes, 4, 4, Charsets.US_ASCII) == "TFL3"

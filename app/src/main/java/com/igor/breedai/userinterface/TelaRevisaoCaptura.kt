@@ -497,6 +497,8 @@ fun TelaRevisaoCaptura(
     bitmapHeightRef: Float,
     detectorHelper: ObjectDetectorHelper? = null,
     detectorSecundarioHelper: ObjectDetectorHelper? = null,
+    criarDetectorSecundarioSobDemanda: (() -> ObjectDetectorHelper?)? = null,
+    labelsSecundarioFallback: List<String> = emptyList(),
     labelsFiltro: List<String> = emptyList(),
     caixasAuditadasIniciais: List<CaixaAuditavel>? = null,
     modoSemFrutos: Boolean = false,
@@ -512,6 +514,7 @@ fun TelaRevisaoCaptura(
     val classesIniciais = remember(
         classificacoesPersonalizadas,
         labelsFiltro,
+        labelsSecundarioFallback,
         detectorHelper,
         detectorSecundarioHelper
     ) {
@@ -526,7 +529,7 @@ fun TelaRevisaoCaptura(
                 ?.filter { it != "???" && it.isNotBlank() }
                 ?.takeIf { it.size in 2..30 }
                 ?: emptyList()
-            val combinadas = (labelsFiltro + doPrimario + doSecundario)
+            val combinadas = (labelsFiltro + doPrimario + doSecundario + labelsSecundarioFallback)
                 .map { it.trim() }
                 .filter { it.isNotBlank() }
                 .distinctBy { it.lowercase(Locale.ROOT) }
@@ -652,6 +655,7 @@ fun TelaRevisaoCaptura(
                     val bmpW = bmp.width.toFloat()
                     val bmpH = bmp.height.toFloat()
 
+                    val usaSecundario = detectorSecundarioHelper != null || criarDetectorSecundarioSobDemanda != null
                     val candidatasContagem = mutableListOf<DetEstilizada>()
                     val labelsDoModelo = helper.obterLabelsModelo().filter { it != "???" && it.isNotBlank() }
                     res.deteccoes.forEach { det ->
@@ -659,7 +663,7 @@ fun TelaRevisaoCaptura(
                         val rawLabel = cat?.label?.takeIf { it.isNotBlank() } ?: rotuloPadrao
                         val labelLower = rawLabel.lowercase(Locale.ROOT)
                         val labelValido = rotuloPassaFiltroModelo(rawLabel, labelsFiltro, labelsDoModelo) ||
-                            (detectorSecundarioHelper != null && labelLower in setOf("cacau", "fruto"))
+                            (usaSecundario && labelLower in setOf("cacau", "fruto"))
                         if (!labelValido) return@forEach
 
                         val r = det.boundingBox
@@ -675,8 +679,26 @@ fun TelaRevisaoCaptura(
                         )
                     }
 
-                    val candidatasEstaticas = if (detectorSecundarioHelper != null) {
-                        val resSec = detectorSecundarioHelper.detectarSincrono(bmp)
+                    var labelsDoSecundario = emptyList<String>()
+                    val candidatasEstaticas = if (usaSecundario) {
+                        val resSec = if (detectorSecundarioHelper != null) {
+                            labelsDoSecundario = detectorSecundarioHelper.obterLabelsModelo()
+                                .filter { it != "???" && it.isNotBlank() }
+                            detectorSecundarioHelper.detectarSincrono(bmp)
+                        } else {
+                            val secTemp = criarDetectorSecundarioSobDemanda?.invoke()
+                            try {
+                                if (secTemp != null) {
+                                    labelsDoSecundario = secTemp.obterLabelsModelo()
+                                        .filter { it != "???" && it.isNotBlank() }
+                                    secTemp.detectarSincrono(bmp)
+                                } else {
+                                    null
+                                }
+                            } finally {
+                                secTemp?.fechar()
+                            }
+                        }
                         val detsSec = resSec?.deteccoes?.mapNotNull { det ->
                             val cat = det.categories.firstOrNull() ?: return@mapNotNull null
                             val r = det.boundingBox
@@ -709,7 +731,28 @@ fun TelaRevisaoCaptura(
                         candidatasContagem
                     }
 
+                    val labelsDescobertas = (
+                        labelsDoModelo.takeIf { it.size in 2..30 }.orEmpty() +
+                            labelsDoSecundario.takeIf { it.size in 2..30 }.orEmpty()
+                        )
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() && !isRotuloGenerico(it) }
+                        .distinctBy { it.lowercase(Locale.ROOT) }
+
                     withContext(Dispatchers.Main) {
+                        if (classificacoesPersonalizadas.isNullOrEmpty() && labelsDescobertas.isNotEmpty()) {
+                            val existentesLower = classesDisponiveis.map { it.lowercase(Locale.ROOT) }.toMutableSet()
+                            var alterou = false
+                            for (lbl in labelsDescobertas) {
+                                if (existentesLower.add(lbl.lowercase(Locale.ROOT))) {
+                                    classesDisponiveis.add(lbl)
+                                    alterou = true
+                                }
+                            }
+                            if (alterou) {
+                                classesDisponiveis.removeAll { isRotuloGenerico(it) }
+                            }
+                        }
                         val fundidas = fundirDeteccoesComSnapping(
                             caixasAtuais = caixas.toList(),
                             deteccoesEstaticas = candidatasEstaticas,

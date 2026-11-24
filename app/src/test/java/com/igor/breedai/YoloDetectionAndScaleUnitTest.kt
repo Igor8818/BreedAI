@@ -442,4 +442,65 @@ class YoloDetectionAndScaleUnitTest {
         assertEquals(anchors[7380][3], decoded[0][0], 0.002f)
         assertEquals(anchors[7380][2], decoded[0][1], 0.002f)
     }
+
+    @Test
+    fun `testCopiarSaidaPlanaParaMatriz_PreservaValoresExatosEmFloat32Uint8EInt8`() {
+        val helper = com.igor.breedai.userinterface.util.ObjectDetectorHelper
+
+        // FLOAT32: 2 linhas x 3 colunas
+        val floatBuf = java.nio.ByteBuffer.allocateDirect(6 * 4).order(java.nio.ByteOrder.nativeOrder())
+        val expectedFloats = floatArrayOf(0.15f, 0.82f, -1.25f, 320.5f, 0.0f, 0.99f)
+        expectedFloats.forEach { floatBuf.putFloat(it) }
+        val floatDest = Array(2) { FloatArray(3) }
+        helper.copiarSaidaPlanaParaMatriz(
+            buffer = floatBuf,
+            dataType = org.tensorflow.lite.DataType.FLOAT32,
+            dim1 = 2,
+            dim2 = 3,
+            dest = floatDest,
+            scratchFloats = FloatArray(6)
+        )
+        assertEquals(0.15f, floatDest[0][0], 0.0001f)
+        assertEquals(-1.25f, floatDest[0][2], 0.0001f)
+        assertEquals(320.5f, floatDest[1][0], 0.0001f)
+        assertEquals(0.99f, floatDest[1][2], 0.0001f)
+
+        // UINT8: q in 0..255 -> (q - zp) * scale
+        val uint8Buf = java.nio.ByteBuffer.allocateDirect(4).order(java.nio.ByteOrder.nativeOrder())
+        uint8Buf.put(byteArrayOf(0.toByte(), 128.toByte(), 200.toByte(), 255.toByte()))
+        val uint8Dest = Array(2) { FloatArray(2) }
+        helper.copiarSaidaPlanaParaMatriz(
+            buffer = uint8Buf,
+            dataType = org.tensorflow.lite.DataType.UINT8,
+            dim1 = 2,
+            dim2 = 2,
+            dest = uint8Dest,
+            quantScale = 0.01f,
+            quantZeroPoint = 128,
+            scratchBytes = ByteArray(4)
+        )
+        assertEquals(-1.28f, uint8Dest[0][0], 0.0001f)
+        assertEquals(0.0f, uint8Dest[0][1], 0.0001f)
+        assertEquals(0.72f, uint8Dest[1][0], 0.0001f)
+        assertEquals(1.27f, uint8Dest[1][1], 0.0001f)
+
+        // INT8: q in -128..127 -> (q - zp) * scale
+        val int8Buf = java.nio.ByteBuffer.allocateDirect(4).order(java.nio.ByteOrder.nativeOrder())
+        int8Buf.put(byteArrayOf((-128).toByte(), (-10).toByte(), 0.toByte(), 127.toByte()))
+        val int8Dest = Array(2) { FloatArray(2) }
+        helper.copiarSaidaPlanaParaMatriz(
+            buffer = int8Buf,
+            dataType = org.tensorflow.lite.DataType.INT8,
+            dim1 = 2,
+            dim2 = 2,
+            dest = int8Dest,
+            quantScale = 0.02f,
+            quantZeroPoint = -10,
+            scratchBytes = ByteArray(4)
+        )
+        assertEquals(-2.36f, int8Dest[0][0], 0.0001f)
+        assertEquals(0.0f, int8Dest[0][1], 0.0001f)
+        assertEquals(0.20f, int8Dest[1][0], 0.0001f)
+        assertEquals(2.74f, int8Dest[1][1], 0.0001f)
+    }
 }

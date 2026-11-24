@@ -65,7 +65,8 @@ object VolumeShutterBridge {
 
 fun criarDetectorHelperBreedAI(
     context: Context,
-    modelConfig: ModelConfig
+    modelConfig: ModelConfig,
+    lazyInit: Boolean = false
 ): ObjectDetectorHelper {
     val source = when {
         !modelConfig.modeloInternoPath.isNullOrBlank() ->
@@ -89,7 +90,8 @@ fun criarDetectorHelperBreedAI(
         scoreThreshold = modelConfig.threshold,
         maxResults = modelConfig.maxResultados,
         defaultLabel = modelConfig.labelsFiltro.firstOrNull() ?: "objeto",
-        customLabels = modelConfig.labelsFiltro
+        customLabels = modelConfig.labelsFiltro,
+        lazyInit = lazyInit
     )
 }
 
@@ -143,12 +145,13 @@ internal fun rotuloPassaFiltroModelo(
     }
 }
 
-fun criarParDetectoresBreedAI(
+fun criarDetectorPrimarioBreedAI(
     context: Context,
-    modelConfig: ModelConfig
-): Pair<ObjectDetectorHelper, ObjectDetectorHelper?> {
+    modelConfig: ModelConfig,
+    lazyInit: Boolean = true
+): ObjectDetectorHelper {
     if (!deveUsarParDetectoresSecundario(modelConfig)) {
-        return criarDetectorHelperBreedAI(context, modelConfig) to null
+        return criarDetectorHelperBreedAI(context, modelConfig, lazyInit = lazyInit)
     }
 
     val usaDoencaComoPrincipal =
@@ -158,7 +161,7 @@ fun criarParDetectoresBreedAI(
                         modelConfig.modeloSelecionado.nomeArquivo == "detector_doenca.tflite" ||
                         modelConfig.modeloSelecionado.nomeArquivo == "detector.tflite")
 
-    val primario = if (usaDoencaComoPrincipal) {
+    return if (usaDoencaComoPrincipal) {
         ObjectDetectorHelper(
             context = context,
             detectorListener = null,
@@ -166,23 +169,65 @@ fun criarParDetectoresBreedAI(
             scoreThreshold = minOf(modelConfig.threshold, 0.25f),
             maxResults = modelConfig.maxResultados,
             defaultLabel = "objeto",
-            customLabels = listOf("cacau", "fruto")
+            customLabels = listOf("cacau", "fruto"),
+            lazyInit = lazyInit
         )
     } else {
-        criarDetectorHelperBreedAI(context, modelConfig)
+        criarDetectorHelperBreedAI(context, modelConfig, lazyInit = lazyInit)
     }
+}
 
-    val secundario = ObjectDetectorHelper(
+fun criarDetectorSecundarioBreedAI(
+    context: Context,
+    modelConfig: ModelConfig,
+    lazyInit: Boolean = false
+): ObjectDetectorHelper? {
+    if (!deveUsarParDetectoresSecundario(modelConfig)) return null
+    return ObjectDetectorHelper(
         context = context,
         detectorListener = null,
         modelSource = ObjectDetectorHelper.ModelSource.Asset(modelConfig.modeloSecundarioArquivo),
         scoreThreshold = minOf(modelConfig.threshold, 0.22f),
         maxResults = modelConfig.maxResultados,
         defaultLabel = com.igor.breedai.data.LABELS_DOENCA_CACAU.firstOrNull() ?: "objeto",
-        customLabels = com.igor.breedai.data.LABELS_DOENCA_CACAU
+        customLabels = com.igor.breedai.data.LABELS_DOENCA_CACAU,
+        lazyInit = lazyInit
     )
+}
 
+fun criarParDetectoresBreedAI(
+    context: Context,
+    modelConfig: ModelConfig,
+    lazyInit: Boolean = false
+): Pair<ObjectDetectorHelper, ObjectDetectorHelper?> {
+    val primario = criarDetectorPrimarioBreedAI(context, modelConfig, lazyInit = lazyInit)
+    val secundario = criarDetectorSecundarioBreedAI(context, modelConfig, lazyInit = lazyInit)
     return primario to secundario
+}
+
+internal fun resolverClassesFallbackRevisao(
+    modelConfig: ModelConfig,
+    caixasExistentes: List<CaixaAuditavel> = emptyList()
+): List<String> {
+    val secundarias = if (deveUsarParDetectoresSecundario(modelConfig)) {
+        com.igor.breedai.data.LABELS_DOENCA_CACAU
+    } else {
+        emptyList()
+    }
+    val combinadas = (
+        modelConfig.labelsFiltro +
+            modelConfig.modeloSelecionado?.labelsDefault.orEmpty() +
+            secundarias +
+            caixasExistentes.map { it.rotulo }
+        )
+        .map { it.trim() }
+        .filter { it.isNotBlank() && it != "???" }
+        .distinctBy { it.lowercase(Locale.ROOT) }
+    val especificas = combinadas.filter { low ->
+        val l = low.lowercase(Locale.ROOT)
+        l != "cacau" && l != "fruto" && l != "objeto"
+    }
+    return if (especificas.isNotEmpty()) especificas else combinadas
 }
 
 @Composable
@@ -284,17 +329,9 @@ fun CameraFullscreenBreedAI(
         }
     }
 
-    val labelsModelo = remember(
-        detectorHelper,
-        modelConfig.modeloSelecionado,
-        modelConfig.modeloInternoPath,
-        modelConfig.labelsFiltro
-    ) {
-        detectorHelper.obterLabelsModelo().filter { it != "???" && it.isNotBlank() }
-    }
-
     fun filtrarDeteccoes(deteccoes: List<Detection>): List<Detection> {
         if (modoSemFrutos) return emptyList()
+        val labelsModelo = detectorHelper.obterLabelsModelo().filter { it != "???" && it.isNotBlank() }
         return deteccoes.filter { det ->
             val label = det.categories.firstOrNull()?.label ?: ""
             val score = det.categories.firstOrNull()?.score ?: 0f

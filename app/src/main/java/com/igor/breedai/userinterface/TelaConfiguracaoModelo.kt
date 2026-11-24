@@ -275,7 +275,7 @@ fun TelaConfiguracaoModelo(
             configMontada.labelsFiltro,
             configMontada.maxResultados
         ) {
-            criarDetectorHelperBreedAI(context, configMontada)
+            criarDetectorHelperBreedAI(context, configMontada, lazyInit = true)
         }
         DisposableEffect(helperTeste) {
             onDispose { helperTeste.fechar() }

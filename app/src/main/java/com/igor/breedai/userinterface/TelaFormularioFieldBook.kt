@@ -131,13 +131,17 @@ fun TelaFormularioFieldBook(
 
     val imageCapture = remember { criarImageCaptureBreedAI() }
 
-    val (detectorHelper, detectorSecundarioHelper) = remember(modelConfig) {
-        criarParDetectoresBreedAI(context, modelConfig)
+    val precisaDetectorPrimario = pontos.isNotEmpty() && (cameraAtiva || fotoParaRevisao != null)
+    val detectorHelper = remember(modelConfig, precisaDetectorPrimario) {
+        if (precisaDetectorPrimario) {
+            criarDetectorPrimarioBreedAI(context, modelConfig, lazyInit = true)
+        } else {
+            null
+        }
     }
-    DisposableEffect(detectorHelper, detectorSecundarioHelper) {
+    DisposableEffect(detectorHelper) {
         onDispose {
-            detectorHelper.fechar()
-            detectorSecundarioHelper?.fechar()
+            detectorHelper?.fechar()
         }
     }
 
@@ -234,7 +238,17 @@ fun TelaFormularioFieldBook(
             bitmapWidthRef = bitmapWCapturado,
             bitmapHeightRef = bitmapHCapturado,
             detectorHelper = detectorHelper,
-            detectorSecundarioHelper = detectorSecundarioHelper,
+            detectorSecundarioHelper = null,
+            criarDetectorSecundarioSobDemanda = if (deveUsarParDetectoresSecundario(modelConfig)) {
+                { criarDetectorSecundarioBreedAI(context, modelConfig, lazyInit = false) }
+            } else {
+                null
+            },
+            labelsSecundarioFallback = if (deveUsarParDetectoresSecundario(modelConfig)) {
+                com.igor.breedai.data.LABELS_DOENCA_CACAU
+            } else {
+                emptyList()
+            },
             labelsFiltro = modelConfig.labelsFiltro,
             modoSemFrutos = situacaoAtual == SituacaoPlanta.SEM_FRUTOS,
             classificacoesPersonalizadas = classificacoesPersonalizadas,
@@ -283,7 +297,7 @@ fun TelaFormularioFieldBook(
         return
     }
 
-    if (cameraAtiva) {
+    if (cameraAtiva && detectorHelper != null) {
         CameraFullscreenBreedAI(
             context = context,
             detectorHelper = detectorHelper,

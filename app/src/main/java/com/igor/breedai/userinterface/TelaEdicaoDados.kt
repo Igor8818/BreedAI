@@ -29,6 +29,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.igor.breedai.data.ConfigConversaoRendimento
 import com.igor.breedai.data.PontoFormulario
 import com.igor.breedai.data.RegistroColeta
@@ -763,8 +764,15 @@ fun TelaEdicaoDados(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             if (reg.uri != Uri.EMPTY) {
+                                val thumbRequest = remember(reg.uri) {
+                                    ImageRequest.Builder(context)
+                                        .data(reg.uri)
+                                        .size(168, 168)
+                                        .crossfade(false)
+                                        .build()
+                                }
                                 AsyncImage(
-                                    model = reg.uri,
+                                    model = thumbRequest,
                                     contentDescription = reg.idCompleto,
                                     modifier = Modifier
                                         .size(56.dp)
